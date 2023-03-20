@@ -22,7 +22,7 @@ The device user should be able to walk into the meeting room, tap on the JIBB ic
 
 ### Installation
 
-*   downalod webexMacrosExamples.zip from https://github.com/jibb-open/jssdk/releases.
+*   downalod webexMacrosExamples.zip from https://github.com/jibb-open/cisco-devices/releases.
 *   Log into your Cisco Room Device as and admin.
 *   Navigate to the setup -> settings -> HttpClient, set Mode to On.
 *   ![](./static/img/https-settings.png)
@@ -66,7 +66,7 @@ The device user should be able to walk into the meeting room, tap on the JIBB ic
 
 ### Installation
 
-*   downalod webexMacrosExamples.zip from https://github.com/jibb-open/jssdk/releases.
+*   downalod webexMacrosExamples.zip from https://github.com/jibb-open/cisco-devices/releases.
 *   Log into your Cisco Room Device as and admin.
 *   Navigate to the setup -> settings -> HttpClient, set Mode to On.
 *   ![](./static/img/https-settings.png)
@@ -86,51 +86,7 @@ Source:
 
 *   [./withCameraControl/jibb.js](withCameraControl_jibb.js.html)
 
-#### 3-webexDeviceExample Camera Presets
-
-webex Device Macro Camera Presets example.
-------------------------------------------
-
-The device user should be able to walk into the meeting room, tap on the JIBB icon, then using the UI be able to select which whiteboard they want to detect.
-
-### Description:
-
-*   start and stop button.
-*   camera will snap to whiteboard that admin preset.
-*   user have a camera control tab.
-*   Admin can set two camera postion and link them to buttons so user can switch between two whiteborads.
-
-![](./static/img/camera-preset1.png) ![](./static/img/camera-preset2.png)
-
-*   Click on source to see the script example.
-
-### File Description
-
-*   jibb.js -> entry point
-*   jibbWebexXapi.js -> JIBB library for Webex devices
-
-### Installation
-
-*   downalod webexMacrosExamples.zip from https://github.com/jibb-open/jssdk/releases.
-*   Log into your Cisco Room Device as and admin.
-*   Navigate to the Macro Editor.
-*   Navigate to the setup -> settings -> HttpClient, set Mode to On.
-*   ![](./static/img/https-settings.png)
-*   Import and Save each of the following Macros into the Room System: jibbWebexXapi.js found under jssdk folder and jibb.js from desired example.
-*   Edite jibb.js by adding your personal Jibb ApiKey to in line 4, to get your ApiKey visit https://app.jibb.ai/admin then navigate to personal settings and add new Device.
-*   Edite jibb.js by add desired Email to receive a pdf Recording of the session to in line 5.
-*   Save and activate jibb.js .
-*   After refreshing the webage you will find jibb panel automatically added in the UI Extension Editor. variable uiExtension line 268 is is the exported XML panel
-*   Using touch panel create two camera presets "Jibb" and "Jibb2" (case sensitive) so that camera postion will be set automatically
-*   If not set script will work but camera postions needs to be set manually before clicking start.
-*   ![](./static/img/camera-presets.png)
-
-### Click on source to see the script example.
-
-Source:
-
-*   [./cameraPresets/jibb.js](cameraPresets_jibb.js.html)
-#### 4-webexDeviceExample
+#### 3-webexDeviceExample
 
 webex Device Macro select inputs.
 ---------------------------------
@@ -154,7 +110,7 @@ The device user should be able to walk into the meeting room, tap on the JIBB ic
 
 ### Installation
 
-*   downalod webexMacrosExamples.zip from https://github.com/jibb-open/jssdk/releases.
+*   downalod webexMacrosExamples.zip from https://github.com/jibb-open/cisco-devices/releases.
 *   Log into your Cisco Room Device as and admin.
 *   Navigate to the setup -> settings -> HttpClient, set Mode to On.
 *   ![](./static/img/https-settings.png)
@@ -174,7 +130,7 @@ Source:
 
 *   [./cameraInputs/jibb.js](cameraInputs_jibb.js.html)
 
-#### 5-EditEmail
+#### 4-EditEmail
 
 webex Device Macro edit Email.
 ------------------------------
@@ -198,7 +154,7 @@ The device user should be able to walk into the meeting room, tap on the JIBB ic
 
 ### Installation
 
-*   downalod webexMacrosExamples.zip from https://github.com/jibb-open/jssdk/releases.
+*   downalod webexMacrosExamples.zip from https://github.com/jibb-open/cisco-devices/releases.
 *   Log into your Cisco Room Device as and admin.
 *   Navigate to the setup -> settings -> HttpClient, set Mode to On.
 *   ![](./static/img/https-settings.png)
@@ -242,7 +198,7 @@ The device user should be able to walk into the meeting room, tap on the JIBB ic
 
 ### Installation
 
-*   downalod webexMacrosExamples.zip from https://github.com/jibb-open/jssdk/releases.
+*   downalod webexMacrosExamples.zip from https://github.com/jibb-open/cisco-devices/releases.
 *   Log into your Cisco Room Device as and admin.
 *   Navigate to the setup -> settings -> HttpClient, set Mode to On.
 *   ![](./static/img/https-settings.png)
