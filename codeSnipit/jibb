@@ -33,6 +33,15 @@ let SessionDetails = {
 	customCorners: [],
 }
 
+let CurrentDeviceCameraSettings = {
+	SettingsCleared: true,
+	PresenterTrack: false,
+	SpeakerTrack: false,
+	Pan: 0,
+	Tilt: 0,
+	Zoom: 0,
+}
+
 async function generateMeetingLink() {
 	console.log("generating meeting link ...")
 	let title = await createTitle()
