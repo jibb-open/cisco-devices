@@ -145,7 +145,7 @@ async function stopRecording() {
 	await Recording.stopRecording()
 }
 
-async function setCameraPosition(postionName) {
+async function setCameraPreset(postionName) {
 	let PresetId = await getCameraPresetId(postionName)
 	if (PresetId != -1) {
 		xapi.Command.Camera.Preset.Activate({ PresetId: PresetId })
@@ -289,7 +289,7 @@ function reactToJibbClick() {
 			if (CurrentDeviceCameraSettings.SettingsCleared){
 				 getDeviceCurrentCameraSettings()
 			}
-			setCameraPosition(`Jibb${SessionDetails.selectedInput}`)
+			setCameraPreset(`Jibb${SessionDetails.selectedInput}`)
 			showCameraSelfView()
 		}
 	})
