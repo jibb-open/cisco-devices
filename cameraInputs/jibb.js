@@ -33,6 +33,15 @@ let SessionDetails = {
 	customCorners: [],
 }
 
+let CurrentDeviceCameraSettings = {
+	SettingsCleared: true,
+	PresenterTrack: false,
+	SpeakerTrack: false,
+	Pan: 0,
+	Tilt: 0,
+	Zoom: 0,
+}
+
 async function generateMeetingLink() {
 	console.log("generating meeting link ...")
 	let title = await createTitle()
@@ -117,6 +126,7 @@ async function stopMeeting() {
 	closeWebView()
 	hideCameraSelfView()
 	hideJibbPanel()
+	setDeviceCameraToBeforeSettings()
 }
 
 async function startRecording() {
@@ -135,11 +145,54 @@ async function stopRecording() {
 	await Recording.stopRecording()
 }
 
-async function setCameraPosition(postionName) {
+async function setCameraPreset(postionName) {
 	let PresetId = await getCameraPresetId(postionName)
 	if (PresetId != -1) {
 		xapi.Command.Camera.Preset.Activate({ PresetId: PresetId })
 	}
+}
+
+
+async function getDeviceCurrentCameraSettings() {
+	console.log("getDeviceCurrentCameraSettings")
+	CurrentDeviceCameraSettings.PresenterTrack = await xapi.Config.Cameras.PresenterTrack.Enabled.get()
+	CurrentDeviceCameraSettings.SpeakerTrack = await xapi.Status.Cameras.SpeakerTrack.Status.get()
+	CurrentDeviceCameraSettings.Pan = await xapi.Status.Cameras.Camera[1].Position.Pan.get()
+	CurrentDeviceCameraSettings.Tilt = await xapi.Status.Cameras.Camera[1].Position.Tilt.get()
+	CurrentDeviceCameraSettings.Zoom = await xapi.Status.Cameras.Camera[1].Position.Zoom.get()
+	CurrentDeviceCameraSettings.SettingsCleared = false
+}
+
+function setDeviceCameraToBeforeSettings() {
+	console.log("setDeviceCameraToBeforeSettings")
+	if (CurrentDeviceCameraSettings.PresenterTrack) {
+		xapi.Config.Cameras.PresenterTrack.Enabled.set(true)
+	}
+	if (CurrentDeviceCameraSettings.SpeakerTrack) {
+		xapi.Command.Cameras.SpeakerTrack.Activate()
+	}
+
+	setCameraPosition(CurrentDeviceCameraSettings.Pan, CurrentDeviceCameraSettings.Tilt, CurrentDeviceCameraSettings.Zoom)
+
+	clearCurrentDeviceCameraSettings()
+}
+
+function setCameraPosition(Pan, Tilt, Zoom) {
+	xapi.Command.Camera.PositionSet({
+		CameraId: 1,
+		Pan: Pan,
+		Tilt: Tilt,
+		Zoom: Zoom,
+	})
+}
+
+function clearCurrentDeviceCameraSettings() {
+	CurrentDeviceCameraSettings.SettingsCleared = true
+	CurrentDeviceCameraSettings.PresenterTrack = false
+	CurrentDeviceCameraSettings.SpeakerTrack = false
+	CurrentDeviceCameraSettings.Pan = 0
+	CurrentDeviceCameraSettings.Tilt = 0
+	CurrentDeviceCameraSettings.Zoom = 0
 }
 
 async function getCameraPresetId(postionName) {
@@ -237,11 +290,21 @@ function reactToStartAndStopClick() {
 function reactToJibbClick() {
 	xapi.Event.UserInterface.Extensions.Panel.Clicked.on((value) => {
 		if (value.PanelId == "jibb_panel") {
-			setCameraPosition(`Jibb${SessionDetails.selectedInput}`)
+
+			if (CurrentDeviceCameraSettings.SettingsCleared){
+				 getDeviceCurrentCameraSettings()
+			}
+			setCameraPreset(`Jibb${SessionDetails.selectedInput}`)
 			showCameraSelfView()
 		}
 	})
 }
+
+
+function stringReplace(oldStr, newStr) {
+	uiExtension = uiExtension.replace(oldStr, newStr)
+}
+
 
 let uiExtension = `<Extensions>
  <Version>1.9</Version>
@@ -349,11 +412,11 @@ function reactToCameraInput() {
 async function switchInput(id) {
 	let connected = await checkInputIsConnected(id)
 	if (connected == "True") {
+		SessionDetails.selectedInput = id
 		xapi.Command.Video.Input.SetMainVideoSource({ ConnectorId: id })
 		await stringReplace(`Selected Input:${SessionDetails.selectedInput}`, `Selected Input:${id}`)
 		await setCameraPosition(`Jibb${id}`)
 		addPanel()
-		SessionDetails.selectedInput = id
 	} else {
 		showAlertInputNotConnected()
 	}
@@ -363,9 +426,6 @@ async function checkInputIsConnected(id) {
 	return await xapi.Status.Video.Input.Connector[id].Connected.get()
 }
 
-function stringReplace(oldStr, newStr) {
-	uiExtension = uiExtension.replace(oldStr, newStr)
-}
 
 
 
