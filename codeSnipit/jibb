@@ -295,6 +295,12 @@ function reactToJibbClick() {
 	})
 }
 
+
+function stringReplace(oldStr, newStr) {
+	uiExtension = uiExtension.replace(oldStr, newStr)
+}
+
+
 let uiExtension = `<Extensions>
  <Version>1.9</Version>
  <Panel>
