@@ -31,11 +31,11 @@ function reactToCameraInput() {
 async function switchInput(id) {
 	let connected = await checkInputIsConnected(id)
 	if (connected == "True") {
-		SessionDetails.selectedInput = id
 		xapi.Command.Video.Input.SetMainVideoSource({ ConnectorId: id })
 		await stringReplace(`Selected Input:${SessionDetails.selectedInput}`, `Selected Input:${id}`)
 		await setCameraPosition(`Jibb${id}`)
 		addPanel()
+		SessionDetails.selectedInput = id
 	} else {
 		showAlertInputNotConnected()
 	}
