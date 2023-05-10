@@ -158,7 +158,7 @@ async function setCameraPreset(postionName) {
 async function getDeviceCurrentCameraSettings() {
 	console.log("getDeviceCurrentCameraSettings")
 	CurrentDeviceCameraSettings.PresenterTrack = await xapi.Config.Cameras.PresenterTrack.Enabled.get()
-	CurrentDeviceCameraSettings.SpeakerTrack = xapi.Config.Cameras.SpeakerTrack.Mode.get()
+	CurrentDeviceCameraSettings.SpeakerTrack = await xapi.Config.Cameras.SpeakerTrack.Mode.get()
 	CurrentDeviceCameraSettings.Pan = await xapi.Status.Cameras.Camera[1].Position.Pan.get()
 	CurrentDeviceCameraSettings.Tilt = await xapi.Status.Cameras.Camera[1].Position.Tilt.get()
 	CurrentDeviceCameraSettings.Zoom = await xapi.Status.Cameras.Camera[1].Position.Zoom.get()
