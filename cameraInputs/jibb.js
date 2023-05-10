@@ -36,7 +36,7 @@ let SessionDetails = {
 let CurrentDeviceCameraSettings = {
 	SettingsCleared: true,
 	PresenterTrack: false,
-	SpeakerTrack: false,
+	SpeakerTrack: "Off",
 	Pan: 0,
 	Tilt: 0,
 	Zoom: 0,
@@ -146,6 +146,8 @@ async function stopRecording() {
 }
 
 async function setCameraPreset(postionName) {
+	xapi.Config.Cameras.PresenterTrack.Enabled.set(false)
+	xapi.Config.Cameras.SpeakerTrack.Mode.set("Off");
 	let PresetId = await getCameraPresetId(postionName)
 	if (PresetId != -1) {
 		xapi.Command.Camera.Preset.Activate({ PresetId: PresetId })
@@ -156,7 +158,7 @@ async function setCameraPreset(postionName) {
 async function getDeviceCurrentCameraSettings() {
 	console.log("getDeviceCurrentCameraSettings")
 	CurrentDeviceCameraSettings.PresenterTrack = await xapi.Config.Cameras.PresenterTrack.Enabled.get()
-	CurrentDeviceCameraSettings.SpeakerTrack = await xapi.Status.Cameras.SpeakerTrack.Status.get()
+	CurrentDeviceCameraSettings.SpeakerTrack = xapi.Config.Cameras.SpeakerTrack.Mode.get()
 	CurrentDeviceCameraSettings.Pan = await xapi.Status.Cameras.Camera[1].Position.Pan.get()
 	CurrentDeviceCameraSettings.Tilt = await xapi.Status.Cameras.Camera[1].Position.Tilt.get()
 	CurrentDeviceCameraSettings.Zoom = await xapi.Status.Cameras.Camera[1].Position.Zoom.get()
@@ -168,9 +170,9 @@ function setDeviceCameraToBeforeSettings() {
 	if (CurrentDeviceCameraSettings.PresenterTrack) {
 		xapi.Config.Cameras.PresenterTrack.Enabled.set(true)
 	}
-	if (CurrentDeviceCameraSettings.SpeakerTrack) {
-		xapi.Command.Cameras.SpeakerTrack.Activate()
-	}
+
+	xapi.Config.Cameras.SpeakerTrack.Mode.set(CurrentDeviceCameraSettings.SpeakerTrack);
+	
 
 	setCameraPosition(CurrentDeviceCameraSettings.Pan, CurrentDeviceCameraSettings.Tilt, CurrentDeviceCameraSettings.Zoom)
 
@@ -189,7 +191,7 @@ function setCameraPosition(Pan, Tilt, Zoom) {
 function clearCurrentDeviceCameraSettings() {
 	CurrentDeviceCameraSettings.SettingsCleared = true
 	CurrentDeviceCameraSettings.PresenterTrack = false
-	CurrentDeviceCameraSettings.SpeakerTrack = false
+	CurrentDeviceCameraSettings.SpeakerTrack = "Off"
 	CurrentDeviceCameraSettings.Pan = 0
 	CurrentDeviceCameraSettings.Tilt = 0
 	CurrentDeviceCameraSettings.Zoom = 0
@@ -412,11 +414,11 @@ function reactToCameraInput() {
 async function switchInput(id) {
 	let connected = await checkInputIsConnected(id)
 	if (connected == "True") {
-		SessionDetails.selectedInput = id
 		xapi.Command.Video.Input.SetMainVideoSource({ ConnectorId: id })
 		await stringReplace(`Selected Input:${SessionDetails.selectedInput}`, `Selected Input:${id}`)
 		await setCameraPosition(`Jibb${id}`)
 		addPanel()
+		SessionDetails.selectedInput = id
 	} else {
 		showAlertInputNotConnected()
 	}
