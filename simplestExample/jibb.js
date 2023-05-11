@@ -146,6 +146,9 @@ async function stopRecording() {
 }
 
 async function setCameraPreset(postionName) {
+	if (CurrentDeviceCameraSettings.SettingsCleared){
+		await getDeviceCurrentCameraSettings()
+   }
 	xapi.Config.Cameras.PresenterTrack.Enabled.set(false)
 	xapi.Config.Cameras.SpeakerTrack.Mode.set("Off");
 	let PresetId = await getCameraPresetId(postionName)
@@ -298,9 +301,7 @@ function reactToJibbClick() {
 	xapi.Event.UserInterface.Extensions.Panel.Clicked.on((value) => {
 		if (value.PanelId == "jibb_panel") {
 
-			if (CurrentDeviceCameraSettings.SettingsCleared){
-				 getDeviceCurrentCameraSettings()
-			}
+
 			setCameraPreset(`Jibb${SessionDetails.selectedInput}`)
 			showCameraSelfView()
 		}
