@@ -150,7 +150,7 @@ async function setCameraPreset(postionName) {
 		await getDeviceCurrentCameraSettings()
    }
 	xapi.Config.Cameras.PresenterTrack.Enabled.set(false)
-	xapi.Config.Cameras.SpeakerTrack.Mode.set("Off");
+	xapi.Command.Cameras.SpeakerTrack.Deactivate();
 	let PresetId = await getCameraPresetId(postionName)
 
 	if (PresetId == -1){
@@ -169,7 +169,7 @@ async function setCameraPreset(postionName) {
 async function getDeviceCurrentCameraSettings() {
 	console.log("getDeviceCurrentCameraSettings")
 	CurrentDeviceCameraSettings.PresenterTrack = await xapi.Config.Cameras.PresenterTrack.Enabled.get()
-	CurrentDeviceCameraSettings.SpeakerTrack = await xapi.Config.Cameras.SpeakerTrack.Mode.get()
+	CurrentDeviceCameraSettings.SpeakerTrack = await  xapi.Status.Cameras.SpeakerTrack.Status.get()
 	CurrentDeviceCameraSettings.Pan = await xapi.Status.Cameras.Camera[1].Position.Pan.get()
 	CurrentDeviceCameraSettings.Tilt = await xapi.Status.Cameras.Camera[1].Position.Tilt.get()
 	CurrentDeviceCameraSettings.Zoom = await xapi.Status.Cameras.Camera[1].Position.Zoom.get()
@@ -181,8 +181,9 @@ async function setDeviceCameraToBeforeSettings() {
 	if (CurrentDeviceCameraSettings.PresenterTrack) {
 		await xapi.Config.Cameras.PresenterTrack.Enabled.set(true)
 	}
-	if (CurrentDeviceCameraSettings.SpeakerTrack != "Off")
-	 xapi.Config.Cameras.SpeakerTrack.Mode.set(CurrentDeviceCameraSettings.SpeakerTrack);
+	if (CurrentDeviceCameraSettings.SpeakerTrack == "Active"){
+		xapi.Command.Cameras.SpeakerTrack.Activate();
+	}
 	setCameraPosition(CurrentDeviceCameraSettings.Pan, CurrentDeviceCameraSettings.Tilt, CurrentDeviceCameraSettings.Zoom)
 
 	clearCurrentDeviceCameraSettings()
