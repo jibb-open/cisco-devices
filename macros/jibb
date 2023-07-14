@@ -1,5 +1,5 @@
 import xapi from "xapi"
-import * as JIBB from "./TagVersion"
+import { JIBB } from "./TagVersion"
 let version = "TagVersion"
 let ApiKey = "YourApiKey"
 let RecordingEmail = "YourEmail"
