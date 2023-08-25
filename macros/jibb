@@ -1,5 +1,5 @@
 import xapi from "xapi"
-import * as JIBB from "./TagVersion"
+import { JIBB } from "./TagVersion"
 let version = "TagVersion"
 let ApiKey = "YourApiKey"
 let RecordingEmail = "YourEmail"
@@ -132,13 +132,17 @@ async function stopMeeting() {
 async function startRecording() {
 	console.log("startRecording ...")
 	let title = await createTitle()
-	await Recording.startRecording({
-		alternativeEmail: RecordingEmail,
-		sensivityLevel: 2,
-		meetingId: SessionDetails.meetingId,
-		meetingToken: SessionDetails.meetingToken,
-		title: title,
-	})
+	try {
+		await Recording.startRecording({
+			alternativeEmail: RecordingEmail,
+			sensivityLevel: 2,
+			meetingId: SessionDetails.meetingId,
+			meetingToken: SessionDetails.meetingToken,
+			title: title,
+		})
+	} catch (err) {
+		console.log("Recording Error: ", err)
+	}
 }
 
 async function stopRecording() {
@@ -146,30 +150,48 @@ async function stopRecording() {
 }
 
 async function setCameraPreset(postionName) {
-	if (CurrentDeviceCameraSettings.SettingsCleared){
+	if (CurrentDeviceCameraSettings.SettingsCleared) {
 		await getDeviceCurrentCameraSettings()
-   }
-	xapi.Config.Cameras.PresenterTrack.Enabled.set(false)
-	xapi.Command.Cameras.SpeakerTrack.Deactivate();
-	let PresetId = await getCameraPresetId(postionName)
+	}
 
-	if (PresetId == -1){
+	try {
+		await xapi.Config.Cameras.PresenterTrack.Enabled.set(false)
+	} catch (err) {
+		console.warn("This device does not ahave Presenter track")
+	}
+	try {
+		await xapi.Command.Cameras.SpeakerTrack.Deactivate();
+	} catch (err) {
+		console.warn("This device does not ahave Speaker track")
+	}
+
+	let PresetId = await getCameraPresetId(postionName)
+	if (PresetId == -1) {
 		PresetId = await getCameraPresetId("Jibb")
 	}
-	if (PresetId == -1){
+	if (PresetId == -1) {
 		PresetId = await getCameraPresetId("jibb")
 	}
-	
+
 	if (PresetId != -1) {
 		xapi.Command.Camera.Preset.Activate({ PresetId: PresetId })
 	}
 }
 
-
 async function getDeviceCurrentCameraSettings() {
 	console.log("getDeviceCurrentCameraSettings")
-	CurrentDeviceCameraSettings.PresenterTrack = await xapi.Config.Cameras.PresenterTrack.Enabled.get()
-	CurrentDeviceCameraSettings.SpeakerTrack = await  xapi.Status.Cameras.SpeakerTrack.Status.get()
+	try {
+		CurrentDeviceCameraSettings.PresenterTrack = await xapi.Config.Cameras.PresenterTrack.Enabled.get()
+	} catch (err) {
+		//Device does not have presenter track
+	}
+
+	try {
+		CurrentDeviceCameraSettings.SpeakerTrack = await xapi.Status.Cameras.SpeakerTrack.Status.get()
+	} catch (err) {
+		//Device does not have speacker track
+	}
+
 	CurrentDeviceCameraSettings.Pan = await xapi.Status.Cameras.Camera[1].Position.Pan.get()
 	CurrentDeviceCameraSettings.Tilt = await xapi.Status.Cameras.Camera[1].Position.Tilt.get()
 	CurrentDeviceCameraSettings.Zoom = await xapi.Status.Cameras.Camera[1].Position.Zoom.get()
@@ -210,6 +232,9 @@ function clearCurrentDeviceCameraSettings() {
 async function getCameraPresetId(postionName) {
 	let json = await xapi.Command.Camera.Preset.List({ CameraId: 1, DefaultPosition: false })
 	let jsonArray = json["Preset"]
+	if (jsonArray == undefined) {
+		return -1
+	}
 
 	var filteredObj = jsonArray.find(function (item, i) {
 		if (item.Name === postionName) {
