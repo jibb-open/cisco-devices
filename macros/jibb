@@ -367,7 +367,7 @@ function reactToStartAndStopClick() {
 function reactToJibbClick() {
 	xapi.Event.UserInterface.Extensions.Panel.Clicked.on(async(value) => {
 		try {
-			await checkSystemHealth("https://" + "#ApiUrl# + /health")
+			await checkSystemHealth("https://#ApiUrl#/health")
 		} catch(err) {
 			xapi.Command.UserInterface.Message.Alert.Display({
 				Duration: 20,
