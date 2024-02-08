@@ -82,6 +82,9 @@ const checkSystemHealth = async (url) => {
 		console.log(`You do not have have access to device configuration: ${error}`)
 		throw new Error(error);
   }
+	DeviceInfo.ApiKey = ApiKey
+	DeviceInfo.JIBBURI = "#ApiUrl#"
+
 	console.log("*** Device INFO ***")
 	console.log(DeviceInfo)
 	console.log("*** Device INFO ***")
