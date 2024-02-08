@@ -42,6 +42,51 @@ let CurrentDeviceCameraSettings = {
 	Zoom: 0,
 }
 
+const checkSystemHealth = async (url) => {
+	let DeviceInfo = {}
+  try {
+    const res = await xapi.Command.HttpClient.Get({ ResultBody: 'None', Url: url });
+		console.log(res)
+    if (res.StatusCode === '200') {
+			console.log(`You have access to ${url}`);
+		}
+		DeviceInfo.IPSAStatusCode = res.StatusCode
+  } catch (error) {
+		console.log(`You do not have have access to ${url}. Error: ${error}`)
+		throw new Error(`You do not have Access to JIBB APIs. Error: ${error.message}`);
+  }
+
+	try {
+		let res = await xapi.Config.Macros.Mode.get()
+		DeviceInfo.MacroMode = res
+		if (res != "On") {
+			throw new Error(`Macro Mode is off`);
+		}
+		
+		res = await xapi.Config.Macros.QuickJSEngine.get()
+		DeviceInfo.QuickJSEngineMode = res
+		if (res != "On") {
+			throw new Error(`QuickJSEngine is off`);
+		}
+		res = await xapi.Config.HttpClient.Mode.get()
+		DeviceInfo.HttpClientMode = res
+		if (res != "On") {
+			throw new Error(`HttpClient is off`);
+		}
+		let value = await xapi.Status.SystemUnit.Software.DisplayName.get()
+		DeviceInfo.OS = value
+		value = await xapi.Status.SystemUnit.ProductId.get()
+		DeviceInfo.DeviceType = value
+	}
+	catch (error) {
+		console.log(`You do not have have access to device configuration: ${error}`)
+		throw new Error(error);
+  }
+	console.log("*** Device INFO ***")
+	console.log(DeviceInfo)
+	console.log("*** Device INFO ***")
+};
+
 async function generateMeetingLink() {
 	console.log("generating meeting link ...")
 	let title = await createTitle()
@@ -320,16 +365,22 @@ function reactToStartAndStopClick() {
 }
 
 function reactToJibbClick() {
-	xapi.Event.UserInterface.Extensions.Panel.Clicked.on((value) => {
+	xapi.Event.UserInterface.Extensions.Panel.Clicked.on(async(value) => {
+		try {
+			await checkSystemHealth("https://#ApiUrl#/health")
+		} catch(err) {
+			xapi.Command.UserInterface.Message.Alert.Display({
+				Duration: 20,
+				Text: err.message,
+				Title: "Requirements has not been met!",
+			})
+		}
 		if (value.PanelId == "jibb_panel") {
-
-
 			setCameraPreset(`Jibb${SessionDetails.selectedInput}`)
 			showCameraSelfView()
 		}
 	})
 }
-
 
 function stringReplace(oldStr, newStr) {
 	uiExtension = uiExtension.replace(oldStr, newStr)
