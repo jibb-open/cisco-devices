@@ -46,7 +46,6 @@ const checkSystemHealth = async (url) => {
 	let DeviceInfo = {}
   try {
     const res = await xapi.Command.HttpClient.Get({ ResultBody: 'None', Url: url });
-		console.log(res)
     if (res.StatusCode === '200') {
 			console.log(`You have access to ${url}`);
 		}
@@ -107,7 +106,17 @@ async function createTitle() {
 }
 
 async function gettingUserToken() {
-	SessionDetails.userToken = await Auth.getUserToken()
+	try {
+		SessionDetails.userToken = await Auth.getUserToken()
+	} catch(err) {
+		console.log(`Cannot get user token: ${err}`)
+		xapi.Command.UserInterface.Message.Alert.Display({
+			Duration: 20,
+			Text: "Something went wrong. Please check your API KEY",
+			Title: "Error",
+		})
+		throw("Cannot get user token. Please check your API KEY")
+	}
 }
 
 async function gettingMeetingToken() {
@@ -194,7 +203,11 @@ async function startRecording() {
 }
 
 async function stopRecording() {
-	await Recording.stopRecording()
+	try {
+		await Recording.stopRecording()
+	} catch(err) {
+		console.warn("Cannot stop recording")
+	}
 }
 
 async function setCameraPreset(postionName) {
@@ -377,6 +390,8 @@ function reactToJibbClick() {
 				Text: err.message,
 				Title: "Requirements has not been met!",
 			})
+			hideJibbPanel()
+			throw(err)
 		}
 		if (value.PanelId == "jibb_panel") {
 			setCameraPreset(`Jibb${SessionDetails.selectedInput}`)
