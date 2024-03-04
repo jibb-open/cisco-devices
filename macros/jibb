@@ -2,7 +2,7 @@ import xapi from "xapi"
 import { JIBB } from "./TagVersion"
 let version = "TagVersion"
 let ApiKey = "YourApiKey"
-let RecordingEmail = "YourEmail"
+let RecordingEmail = ""
 let MeetingAPI = JIBB.Meeting
 let Auth = JIBB.Auth
 let EventBus = JIBB.EventBus
@@ -30,7 +30,6 @@ let SessionDetails = {
 	cameraId: "",
 	clientId: "",
 	selectedInput: 1,
-	customCorners: [],
 }
 
 let CurrentDeviceCameraSettings = {
@@ -150,7 +149,6 @@ async function startTheMeeting() {
 		meetingToken: SessionDetails.meetingToken,
 		surfaceType: SurfaceType.WHITEBOARD,
 		fixedCorners: true,
-		customCorners: SessionDetails.customCorners,
 		cameraId: SessionDetails.cameraId,
 		clientId: SessionDetails.clientId,
 		enableColor: true,
