@@ -1,6 +1,6 @@
 import xapi from "xapi"
-import { JIBB } from "./TagVersion"
-let version = "TagVersion"
+import { JIBB } from "./#JSSDKFileName#"
+let JSSDKVersion = "#JSSDKVersion#"
 let ApiKey = "YourApiKey"
 let RecordingEmail = ""
 let MeetingAPI = JIBB.Meeting
@@ -42,51 +42,43 @@ let CurrentDeviceCameraSettings = {
 }
 
 const checkSystemHealth = async (url) => {
-	let DeviceInfo = {}
-  try {
-    const res = await xapi.Command.HttpClient.Get({ ResultBody: 'None', Url: url });
-    if (res.StatusCode === '200') {
+	try {
+		const res = await xapi.Command.HttpClient.Get({ ResultBody: 'None', Url: url });
+		if (res.StatusCode === '200') {
 			console.log(`You have access to ${url}`);
 		}
-		DeviceInfo.IPSAStatusCode = res.StatusCode
-  } catch (error) {
+	} catch (error) {
 		console.log(`You do not have have access to ${url}. Error: ${error}`)
 		throw new Error(`You do not have Access to JIBB APIs. Error: ${error.message}`);
-  }
+	}
 
 	try {
-		let res = await xapi.Config.Macros.Mode.get()
-		DeviceInfo.MacroMode = res
-		if (res != "On") {
-			throw new Error(`Macro Mode is off`);
-		}
-		
-		res = await xapi.Config.Macros.QuickJSEngine.get()
-		DeviceInfo.QuickJSEngineMode = res
-		if (res != "On") {
-			throw new Error(`QuickJSEngine is off`);
-		}
 		res = await xapi.Config.HttpClient.Mode.get()
-		DeviceInfo.HttpClientMode = res
 		if (res != "On") {
 			throw new Error(`HttpClient is off`);
 		}
-		let value = await xapi.Status.SystemUnit.Software.DisplayName.get()
-		DeviceInfo.OS = value
-		value = await xapi.Status.SystemUnit.ProductId.get()
-		DeviceInfo.DeviceType = value
 	}
 	catch (error) {
 		console.log(`You do not have have access to device configuration: ${error}`)
 		throw new Error(error);
-  }
+	}
+};
+
+const getDeviceConfig = async () => {
+	let DeviceInfo = {}
+	let value = await xapi.Status.SystemUnit.Software.DisplayName.get()
+	DeviceInfo.OS = value
+	value = await xapi.Status.SystemUnit.ProductId.get()
+	DeviceInfo.DeviceType = value
+
 	DeviceInfo.ApiKey = ApiKey
 	DeviceInfo.JIBBURI = "#ApiUrl#"
+	DeviceInfo.JSSDKVersion = JSSDKVersion
 
 	console.log("*** Device INFO ***")
 	console.log(DeviceInfo)
 	console.log("*** Device INFO ***")
-};
+}
 
 async function generateMeetingLink() {
 	console.log("generating meeting link ...")
@@ -107,14 +99,14 @@ async function createTitle() {
 async function gettingUserToken() {
 	try {
 		SessionDetails.userToken = await Auth.getUserToken()
-	} catch(err) {
+	} catch (err) {
 		console.log(`Cannot get user token: ${err}`)
 		xapi.Command.UserInterface.Message.Alert.Display({
 			Duration: 20,
 			Text: "Something went wrong. Please check your API KEY",
 			Title: "Error",
 		})
-		throw("Cannot get user token. Please check your API KEY")
+		throw ("Cannot get user token. Please check your API KEY")
 	}
 }
 
@@ -203,7 +195,7 @@ async function startRecording() {
 async function stopRecording() {
 	try {
 		await Recording.stopRecording()
-	} catch(err) {
+	} catch (err) {
 		console.warn("Cannot stop recording")
 	}
 }
@@ -262,7 +254,7 @@ async function setDeviceCameraToBeforeSettings() {
 	if (CurrentDeviceCameraSettings.PresenterTrack) {
 		await xapi.Config.Cameras.PresenterTrack.Enabled.set(true)
 	}
-	if (CurrentDeviceCameraSettings.SpeakerTrack == "Active"){
+	if (CurrentDeviceCameraSettings.SpeakerTrack == "Active") {
 		xapi.Command.Cameras.SpeakerTrack.Activate();
 	}
 	setCameraPosition(CurrentDeviceCameraSettings.Pan, CurrentDeviceCameraSettings.Tilt, CurrentDeviceCameraSettings.Zoom)
@@ -379,19 +371,20 @@ function reactToStartAndStopClick() {
 }
 
 function reactToJibbClick() {
-	xapi.Event.UserInterface.Extensions.Panel.Clicked.on(async(value) => {
-		try {
-			await checkSystemHealth("https://#ApiUrl#/health")
-		} catch(err) {
-			xapi.Command.UserInterface.Message.Alert.Display({
-				Duration: 20,
-				Text: err.message,
-				Title: "Requirements has not been met!",
-			})
-			hideJibbPanel()
-			throw(err)
-		}
+	xapi.Event.UserInterface.Extensions.Panel.Clicked.on(async (value) => {
 		if (value.PanelId == "jibb_panel") {
+			try {
+				await getDeviceConfig()
+				await checkSystemHealth("https://#ApiUrl#/health")
+			} catch (err) {
+				xapi.Command.UserInterface.Message.Alert.Display({
+					Duration: 20,
+					Text: err.message,
+					Title: "Requirements has not been met!",
+				})
+				hideJibbPanel()
+				throw (err)
+			}
 			setCameraPreset(`Jibb${SessionDetails.selectedInput}`)
 			showCameraSelfView()
 		}
