@@ -177,6 +177,10 @@ async function stopMeeting() {
 }
 
 async function startRecording() {
+	if (RecordingEmail == "") {
+		console.warn("Recoring email is empty. Recording will not start!")
+		return
+	}
 	console.log("startRecording ...")
 	let title = await createTitle()
 	try {
