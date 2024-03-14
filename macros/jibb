@@ -103,7 +103,7 @@ async function gettingUserToken() {
 		console.log(`Cannot get user token: ${err}`)
 		xapi.Command.UserInterface.Message.Alert.Display({
 			Duration: 20,
-			Text: "Unable to reach JIBB’s APIs. Please contact your system admin.",
+			Text: "Something went wrong. Please check your API KEY",
 			Title: "Error",
 		})
 		throw ("Cannot get user token. Please check your API KEY")
