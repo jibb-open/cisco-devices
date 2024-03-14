@@ -103,7 +103,7 @@ async function gettingUserToken() {
 		console.log(`Cannot get user token: ${err}`)
 		xapi.Command.UserInterface.Message.Alert.Display({
 			Duration: 20,
-			Text: "Something went wrong. Please check your API KEY",
+			Text: "Unable to reach JIBB’s APIs. Please contact your system admin.",
 			Title: "Error",
 		})
 		throw ("Cannot get user token. Please check your API KEY")
@@ -384,7 +384,7 @@ function reactToJibbClick() {
 				xapi.Command.UserInterface.Message.Alert.Display({
 					Duration: 20,
 					Text: err.message,
-					Title: "Requirements has not been met!",
+					Title: "Essential device settings are missing: HttpClient, or JIBB API access. Please contact your device admin to check settings.",
 				})
 				hideJibbPanel()
 				throw (err)
