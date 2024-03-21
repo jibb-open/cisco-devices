@@ -22,7 +22,7 @@ function reactToEmailEdit() {
 function setEmailistener() {
 	xapi.Event.UserInterface.Message.TextInput.Response.on(async (event) => {
 		if (event.FeedbackId === "user_email") {
-			stringReplace(`Current Recording Email: ${RecordingEmail}`, `Current Recording Email: ${event.Text}`)
+			stringReplace(`Current Email: ${RecordingEmail}`, `Current Email: ${event.Text}`)
 			addPanel()
 			RecordingEmail = event.Text
 		}
