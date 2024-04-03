@@ -405,7 +405,7 @@ let uiExtension = `<Extensions>
   <Panel>
        <Order>1</Order>
 	   <PanelId>jibb_panel</PanelId>
-	   <Location>HomeScreenAndCallControls</Location>
+	   <Location>#UILocation#</Location>
 	   <Icon>Custom</Icon>
 	   <Name>JIBB</Name>
 	   <ActivityType>Custom</ActivityType>
