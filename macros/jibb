@@ -53,12 +53,12 @@ const checkSystemHealth = async (url) => {
 	}
 
 	try {
-		const res = await xapi.Config.WebEngine.Mode.get()
+		let res = await xapi.Config.WebEngine.Mode.get()
 		if (res != "On") {
 			throw new Error(`WebEngine is off`);
 		}
 
-		const res = await xapi.Config.HttpClient.Mode.get()
+		res = await xapi.Config.HttpClient.Mode.get()
 		if (res != "On") {
 			throw new Error(`HttpClient is off`);
 		}
