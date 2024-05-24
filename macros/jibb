@@ -91,7 +91,7 @@ async function generateMeetingLink() {
 async function createTitle() {
 	let title = String(await xapi.Config.SystemUnit.CustomDeviceId.get())
 	if (String(title) == "") {
-		title = "webex"
+		title = "JIBB Workspace"
 	}
 	return title
 }
