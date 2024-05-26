@@ -8,8 +8,9 @@ function reactToEmailEdit() {
 					xapi.Command.UserInterface.Message.TextInput.Display({
 						FeedbackId: "user_email",
 						Placeholder: RecordingEmail,
-						Title: "Destination Email Address",
-						Text: "When you complete your captures, this is the email address that will receive the capture",
+						Title: "Set your Auto-Save Email",
+						Text: "JIBB will email you an Auto-Saved PDF of your whiteboard content after you end the session",
+						InputText: "Enter email address",
 					})
 					break
 				default:

@@ -53,7 +53,12 @@ const checkSystemHealth = async (url) => {
 	}
 
 	try {
-		const res = await xapi.Config.HttpClient.Mode.get()
+		let res = await xapi.Config.WebEngine.Mode.get()
+		if (res != "On") {
+			throw new Error(`WebEngine is off`);
+		}
+
+		res = await xapi.Config.HttpClient.Mode.get()
 		if (res != "On") {
 			throw new Error(`HttpClient is off`);
 		}
@@ -91,7 +96,7 @@ async function generateMeetingLink() {
 async function createTitle() {
 	let title = String(await xapi.Config.SystemUnit.CustomDeviceId.get())
 	if (String(title) == "") {
-		title = "webex"
+		title = "JIBB Workspace"
 	}
 	return title
 }
