@@ -17,7 +17,8 @@ function Config(apiKey) {
 
 	this.apiKey = apiKey
 	this.webURL = "#WebAppUrl#"
-	xapi.Command.WebEngine.MediaAccess.add({ Hostname: "#WebAppUrl#", Device: "Camera" })
+	const hostName = new URL(this.webURL).hostname
+	xapi.Command.WebEngine.MediaAccess.add({ Hostname: hostName, Device: "Camera" })
 	JIBB.Config.setApiBaseURL("#ApiUrl#")
 	JIBB.Auth.configure({ apiKey: apiKey })
 }
