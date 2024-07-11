@@ -16,9 +16,10 @@ const SurfaceType = {
 function Config(apiKey) {
 
 	this.apiKey = apiKey
-	this.webURL = "https://" + "#WebAppUrl#"
-	xapi.Command.WebEngine.MediaAccess.add({ Hostname: "#WebAppUrl#", Device: "Camera" })
-	JIBB.Config.setApiBaseURL("https://" + "#ApiUrl#")
+	this.webURL = "#WebAppUrl#"
+	const hostName = new URL(this.webURL).hostname
+	xapi.Command.WebEngine.MediaAccess.add({ Hostname: hostName, Device: "Camera" })
+	JIBB.Config.setApiBaseURL("#ApiUrl#")
 	JIBB.Auth.configure({ apiKey: apiKey })
 }
 
@@ -384,7 +385,7 @@ function reactToJibbClick() {
 		if (value.PanelId == "jibb_panel") {
 			try {
 				await getDeviceConfig()
-				await checkSystemHealth("https://#ApiUrl#/health")
+				await checkSystemHealth("#ApiUrl#/health")
 			} catch (err) {
 				xapi.Command.UserInterface.Message.Alert.Display({
 					Duration: 20,
