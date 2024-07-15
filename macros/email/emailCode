@@ -10,7 +10,7 @@ function reactToEmailEdit() {
 						Placeholder: RecordingEmail,
 						Title: "Set your Auto-Save Email",
 						Text: "JIBB will email you an Auto-Saved PDF of your whiteboard content after you end the session",
-						InputText: "Enter email address",
+						Placeholder: "Enter email address",
 					})
 					break
 				default:
