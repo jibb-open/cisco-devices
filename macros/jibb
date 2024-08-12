@@ -13,12 +13,17 @@ const SurfaceType = {
 	WHITEBOARD: "WHITEBOARD",
 }
 
+function getHostname(url) {
+  const match = url.match(/^(?:https?:\/\/)?(?:www\.)?([^\/:]+)/i);
+  return match && match[1];
+}
+
 function Config(apiKey) {
 
 	this.apiKey = apiKey
-	this.webURL = "https://" + "#WebAppUrl#"
-	xapi.Command.WebEngine.MediaAccess.add({ Hostname: "#WebAppUrl#", Device: "Camera" })
-	JIBB.Config.setApiBaseURL("https://" + "#ApiUrl#")
+	this.webURL = "#WebAppUrl#"
+	xapi.Command.WebEngine.MediaAccess.add({ Hostname: getHostname(this.webURL), Device: "Camera" })
+	JIBB.Config.setApiBaseURL("#ApiUrl#")
 	JIBB.Auth.configure({ apiKey: apiKey })
 }
 
@@ -384,7 +389,7 @@ function reactToJibbClick() {
 		if (value.PanelId == "jibb_panel") {
 			try {
 				await getDeviceConfig()
-				await checkSystemHealth("https://#ApiUrl#/health")
+				await checkSystemHealth("#ApiUrl#/health")
 			} catch (err) {
 				xapi.Command.UserInterface.Message.Alert.Display({
 					Duration: 20,
