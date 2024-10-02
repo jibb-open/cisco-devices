@@ -49,7 +49,7 @@ let CurrentDeviceCameraSettings = {
 const checkSystemHealth = async (url) => {
     try {
         const res = await xapi.Command.HttpClient.Get({ ResultBody: 'None', Url: url });
-        if (res.StatusCode === 200) {
+        if (res.StatusCode == 200) {
             console.log(`You have access to ${url}`);
         } else {
             throw new Error(`Unexpected status code: ${res.StatusCode}`);
