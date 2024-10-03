@@ -47,31 +47,32 @@ let CurrentDeviceCameraSettings = {
 }
 
 const checkSystemHealth = async (url) => {
-	try {
-		const res = await xapi.Command.HttpClient.Get({ ResultBody: 'None', Url: url });
-		if (res.StatusCode === '200') {
-			console.log(`You have access to ${url}`);
-		}
-	} catch (error) {
-		console.log(`You do not have have access to ${url}. Error: ${error}`)
-		throw new Error(`You do not have Access to JIBB APIs. Error: ${error.message}`);
-	}
+    try {
+        const res = await xapi.Command.HttpClient.Get({ ResultBody: 'None', Url: url });
+        if (res.StatusCode == 200) {
+            console.log(`You have access to ${url}`);
+        } else {
+            throw new Error(`Unexpected status code: ${res.StatusCode}`);
+        }
+    } catch (error) {
+        console.log(`You do not have access to ${url}. Error: ${error}`);
+        throw new Error(`You do not have access to JIBB APIs. Error: ${error.message}`);
+    }
 
-	try {
-		let res = await xapi.Config.WebEngine.Mode.get()
-		if (res != "On") {
-			throw new Error(`WebEngine is off`);
-		}
+    try {
+        const webEngineMode = await xapi.Config.WebEngine.Mode.get();
+        if (webEngineMode !== "On") {
+            throw new Error('WebEngine is off');
+        }
 
-		res = await xapi.Config.HttpClient.Mode.get()
-		if (res != "On") {
-			throw new Error(`HttpClient is off`);
-		}
-	}
-	catch (error) {
-		console.log(`You do not have have access to device configuration: ${error}`)
-		throw new Error(error);
-	}
+        const httpClientMode = await xapi.Config.HttpClient.Mode.get();
+        if (httpClientMode !== "On") {
+            throw new Error('HttpClient is off');
+        }
+    } catch (error) {
+        console.log(`You do not have access to device configuration: ${error}`);
+        throw new Error(`Device configuration error: ${error.message}`);
+    }
 };
 
 const getDeviceConfig = async () => {
