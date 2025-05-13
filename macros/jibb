@@ -138,14 +138,28 @@ async function autoStartMeeting() {
 	hideCameraSelfView()
 	await generateMeetingLink()
 	await openMeetingUrlInWebView()
-	await sleep(10000) //wait until page finshed loading, could be less than 10s.
+	await sleep(10000) //wait until page finished loading
+
 	await getWebClinetId()
-	await getCameraId()
+
+	try {
+		await getCameraId()
+	} catch (err) {
+		console.error("Camera access issue:", err.message)
+		xapi.Command.UserInterface.Message.Alert.Display({
+			Duration: 10,
+			Text: "Unable to access the camera. Please check the setup.",
+			Title: "Camera Error",
+		});
+		return;
+	}
+
 	await gettingMeetingToken()
 	await startTheMeeting()
 	await sleep(5000)
 	startRecording()
 }
+
 
 async function startTheMeeting() {
 	let req = {
@@ -162,12 +176,23 @@ async function startTheMeeting() {
 async function getAvailableCameraList() {
 	return await EventBus.getCameraList(SessionDetails.clientId)
 }
+
 async function getCameraId() {
-	let cameraList = await getAvailableCameraList()
-	if (cameraList.length) {
-		SessionDetails.cameraId = cameraList[0].id
-	} else return Promise.reject("No Camera Access")
+	try {
+		let cameraList = await getAvailableCameraList();
+		console.log("Camera list received:", cameraList);
+		if (Array.isArray(cameraList) && cameraList.length > 0 && cameraList[0]?.id) {
+			SessionDetails.cameraId = cameraList[0].id;
+		} else {
+			console.warn("No valid camera returned by getAvailableCameraList()");
+			return Promise.reject("No Camera Access");
+		}
+	} catch (err) {
+		console.warn("Error in getCameraId:", err.message);
+		return Promise.reject("Camera detection failed: " + err.message);
+	}
 }
+
 
 async function getWebClinetId() {
 	let statusList = await EventBus.getClientStatusList()
@@ -179,13 +204,39 @@ async function openMeetingUrlInWebView() {
 }
 
 async function stopMeeting() {
-	console.log("stopMeeting ...")
-	await stopRecording()
-	closeWebView()
-	hideCameraSelfView()
-	hideJibbPanel()
-	setDeviceCameraToBeforeSettings()
+	console.log("stopMeeting ...");
+
+	try {
+		await stopRecording();
+	} catch (err) {
+		console.warn("Error stopping recording:", err.message);
+	}
+
+	try {
+		await closeWebView();
+	} catch (err) {
+		console.warn("Error closing WebView:", err.message);
+	}
+
+	try {
+		await hideCameraSelfView();
+	} catch (err) {
+		console.warn("Error hiding self-view:", err.message);
+	}
+
+	try {
+		await hideJibbPanel();
+	} catch (err) {
+		console.warn("Error hiding JIBB panel:", err.message);
+	}
+
+	try {
+		await setDeviceCameraToBeforeSettings();
+	} catch (err) {
+		console.warn("Error restoring camera settings:", err.message);
+	}
 }
+
 
 async function startRecording() {
 	if (RecordingEmail == "") {
@@ -245,45 +296,79 @@ async function setCameraPreset(postionName) {
 }
 
 async function getDeviceCurrentCameraSettings() {
-	console.log("getDeviceCurrentCameraSettings")
+	console.log("getDeviceCurrentCameraSettings");
 	try {
-		CurrentDeviceCameraSettings.PresenterTrack = await xapi.Config.Cameras.PresenterTrack.Enabled.get()
+		CurrentDeviceCameraSettings.PresenterTrack = await xapi.Config.Cameras.PresenterTrack.Enabled.get();
 	} catch (err) {
-		//Device does not have presenter track
+		console.warn("PresenterTrack not available:", err.message);
 	}
 
 	try {
-		CurrentDeviceCameraSettings.SpeakerTrack = await xapi.Status.Cameras.SpeakerTrack.Status.get()
+		CurrentDeviceCameraSettings.SpeakerTrack = await xapi.Status.Cameras.SpeakerTrack.Status.get();
 	} catch (err) {
-		//Device does not have speacker track
+		console.warn("SpeakerTrack not available:", err.message);
 	}
 
-	CurrentDeviceCameraSettings.Pan = await xapi.Status.Cameras.Camera[1].Position.Pan.get()
-	CurrentDeviceCameraSettings.Tilt = await xapi.Status.Cameras.Camera[1].Position.Tilt.get()
-	CurrentDeviceCameraSettings.Zoom = await xapi.Status.Cameras.Camera[1].Position.Zoom.get()
-	CurrentDeviceCameraSettings.SettingsCleared = false
+	try {
+		const cameras = await xapi.Status.Cameras.Camera.get();
+		if (Array.isArray(cameras) && cameras.length > 0) {
+			const cam = cameras[0]; // safely pick first camera
+			CurrentDeviceCameraSettings.Pan = cam.Position?.Pan || 0;
+			CurrentDeviceCameraSettings.Tilt = cam.Position?.Tilt || 0;
+			CurrentDeviceCameraSettings.Zoom = cam.Position?.Zoom || 0;
+		} else {
+			console.warn("No camera data found for position.");
+		}
+	} catch (err) {
+		console.warn("Error retrieving camera position:", err.message);
+	}
+
+	CurrentDeviceCameraSettings.SettingsCleared = false;
 }
+
 
 async function setDeviceCameraToBeforeSettings() {
-	console.log("setDeviceCameraToBeforeSettings")
-	if (CurrentDeviceCameraSettings.PresenterTrack) {
-		await xapi.Config.Cameras.PresenterTrack.Enabled.set(true)
-	}
-	if (CurrentDeviceCameraSettings.SpeakerTrack == "Active") {
-		xapi.Command.Cameras.SpeakerTrack.Activate();
-	}
-	setCameraPosition(CurrentDeviceCameraSettings.Pan, CurrentDeviceCameraSettings.Tilt, CurrentDeviceCameraSettings.Zoom)
+	console.log("setDeviceCameraToBeforeSettings");
 
-	clearCurrentDeviceCameraSettings()
-}
+	// Restore PresenterTrack if previously enabled
+	try {
+		if (CurrentDeviceCameraSettings.PresenterTrack) {
+			await xapi.Config.Cameras.PresenterTrack.Enabled.set(true);
+		}
+	} catch (err) {
+		console.warn("PresenterTrack not supported or failed to re-enable:", err.message);
+	}
 
-function setCameraPosition(Pan, Tilt, Zoom) {
-	xapi.Command.Camera.PositionSet({
-		CameraId: 1,
-		Pan: Pan,
-		Tilt: Tilt,
-		Zoom: Zoom,
-	})
+	// Restore SpeakerTrack if previously active
+	try {
+		if (CurrentDeviceCameraSettings.SpeakerTrack === "Active") {
+			await xapi.Command.Cameras.SpeakerTrack.Activate();
+		}
+	} catch (err) {
+		console.warn("SpeakerTrack not supported or failed to re-activate:", err.message);
+	}
+
+	// Restore camera position using valid CameraId
+	try {
+		const cameras = await xapi.Status.Cameras.Camera.get();
+
+		if (Array.isArray(cameras) && cameras.length > 0) {
+			const cameraId = cameras[0].id || 1; // fallback to 1 if not present
+			await xapi.Command.Camera.PositionSet({
+				CameraId: cameraId,
+				Pan: CurrentDeviceCameraSettings.Pan,
+				Tilt: CurrentDeviceCameraSettings.Tilt,
+				Zoom: CurrentDeviceCameraSettings.Zoom,
+			});
+		} else {
+			console.warn("No physical cameras found to reset position.");
+		}
+	} catch (err) {
+		console.warn("Camera PositionSet failed or not supported:", err.message);
+	}
+
+	// Clear state
+	clearCurrentDeviceCameraSettings();
 }
 
 function clearCurrentDeviceCameraSettings() {
@@ -295,34 +380,38 @@ function clearCurrentDeviceCameraSettings() {
 	CurrentDeviceCameraSettings.Zoom = 0
 }
 
-async function getCameraPresetId(postionName) {
-	let json = await xapi.Command.Camera.Preset.List({ CameraId: 1, DefaultPosition: false })
-	let jsonArray = json["Preset"]
-	if (jsonArray == undefined) {
-		return -1
-	}
-
-	var filteredObj = jsonArray.find(function (item, i) {
-		if (item.Name === postionName) {
-			return item
+async function getCameraPresetId(positionName) {
+	try {
+		const cameras = await xapi.Status.Cameras.Camera.get();
+		if (!Array.isArray(cameras) || cameras.length === 0) {
+			console.warn("No cameras available for preset lookup");
+			return -1;
 		}
-	})
-	if (filteredObj != undefined) {
-		return filteredObj["PresetId"]
-	} else return -1
+		const cameraId = cameras[0].id || 1;
+		const json = await xapi.Command.Camera.Preset.List({ CameraId: cameraId, DefaultPosition: false });
+		const presets = json?.Preset || [];
+
+		const match = presets.find(item => item.Name === positionName);
+		return match ? match.PresetId : -1;
+	} catch (err) {
+		console.warn("getCameraPresetId failed:", err.message);
+		return -1;
+	}
 }
 
+
 function closeWebView() {
-	xapi.Command.UserInterface.WebView.Clear({ Target: "PersistentWebApp" })
+	return xapi.Command.UserInterface.WebView.Clear({ Target: "PersistentWebApp" });
 }
 
 function hideCameraSelfView() {
-	xapi.Command.Video.Selfview.Set({
+	return xapi.Command.Video.Selfview.Set({
 		FullscreenMode: "Off",
 		Mode: "Off",
 		PIPPosition: "LowerRight",
-	})
+	});
 }
+
 
 function showCameraSelfView() {
 	xapi.Command.Video.Selfview.Set({
@@ -333,7 +422,7 @@ function showCameraSelfView() {
 }
 
 function hideJibbPanel() {
-	xapi.Command.UserInterface.Extensions.Panel.Close()
+	return xapi.Command.UserInterface.Extensions.Panel.Close();
 }
 
 // Add the Jibb panel to UI
