@@ -55,6 +55,7 @@ const checkSystemHealth = async (url) => {
             throw new Error(`Unexpected status code: ${res.StatusCode}`);
         }
     } catch (error) {
+		console.log(error)
         console.log(`You do not have access to ${url}. Error: ${error}`);
         throw new Error(`You do not have access to JIBB APIs. Error: ${error.message}`);
     }
@@ -70,6 +71,7 @@ const checkSystemHealth = async (url) => {
             throw new Error('HttpClient is off');
         }
     } catch (error) {
+		console.log(error)
         console.log(`You do not have access to device configuration: ${error}`);
         throw new Error(`Device configuration error: ${error.message}`);
     }
@@ -138,18 +140,19 @@ async function autoStartMeeting() {
 	hideCameraSelfView()
 	await generateMeetingLink()
 	await openMeetingUrlInWebView()
-	await sleep(10000) //wait until page finished loading
-
-	await getWebClinetId()
+	await sleep(10000) // wait until page finishes loading
 
 	try {
+		await getWebClinetId()
+		await sleep(3000) // wait to ensure client is registered
 		await getCameraId()
 	} catch (err) {
-		console.error("Camera access issue:", err.message)
+		console.log(err)
+		console.error("Client or camera setup failed:", err.message)
 		xapi.Command.UserInterface.Message.Alert.Display({
 			Duration: 10,
-			Text: "Unable to access the camera. Please check the setup.",
-			Title: "Camera Error",
+			Text: "Please contact admin to check device settings",
+			Title: "Setup Error",
 		});
 		return;
 	}
@@ -179,15 +182,52 @@ async function getAvailableCameraList() {
 
 async function getCameraId() {
 	try {
-		let cameraList = await getAvailableCameraList();
-		console.log("Camera list received:", cameraList);
-		if (Array.isArray(cameraList) && cameraList.length > 0 && cameraList[0]?.id) {
-			SessionDetails.cameraId = cameraList[0].id;
+		const cameraList = await getAvailableCameraList();
+		console.log("Raw camera list received from EventBus.getCameraList():", cameraList);
+
+		if (!Array.isArray(cameraList) || cameraList.length === 0) {
+			console.warn("Camera list is empty or not an array.");
+			return Promise.reject("No cameras detected or accessible.");
+		}
+
+		const validCameras = [];
+		const invalidCameras = [];
+
+		cameraList.forEach((cam, index) => {
+			if (cam?.id && typeof cam.id === "string" && cam.id.trim().length > 0) {
+				validCameras.push(cam);
+			} else {
+				invalidCameras.push({ index, cam });
+			}
+		});
+
+		// Log valid cameras
+		if (validCameras.length > 0) {
+			console.log("Valid accessible cameras:");
+			validCameras.forEach((cam, i) => {
+				console.log(`  [${i + 1}] ID: ${cam.id}, Name: ${cam.name || "N/A"}, Status: ${cam.status || "unknown"}`);
+			});
+
+			// Use the first valid camera
+			SessionDetails.cameraId = validCameras[0].id;
 		} else {
-			console.warn("No valid camera returned by getAvailableCameraList()");
-			return Promise.reject("No Camera Access");
+			console.warn("No valid cameras found in the list.");
+			// Log invalids anyway for debugging
+		}
+
+		// Log invalid cameras
+		if (invalidCameras.length > 0) {
+			console.warn(" Invalid or missing camera IDs:");
+			invalidCameras.forEach(({ index, cam }) => {
+				console.warn(`  [${index + 1}] Camera object is invalid or missing 'id':`, cam);
+			});
+		}
+
+		if (validCameras.length === 0) {
+			return Promise.reject("No valid camera ID available.");
 		}
 	} catch (err) {
+		console.log(err);
 		console.warn("Error in getCameraId:", err.message);
 		return Promise.reject("Camera detection failed: " + err.message);
 	}
@@ -196,7 +236,14 @@ async function getCameraId() {
 
 async function getWebClinetId() {
 	let statusList = await EventBus.getClientStatusList()
-	SessionDetails.clientId = statusList[0].id
+	console.log("Full statusList from getClientStatusList():", statusList)
+
+	if (Array.isArray(statusList) && statusList.length > 0 && statusList[0]?.id) {
+		SessionDetails.clientId = statusList[0].id
+	} else {
+		console.error("No valid client ID found in status list")
+		throw new Error("Unable to get a valid client ID")
+	}
 }
 
 async function openMeetingUrlInWebView() {
@@ -209,30 +256,35 @@ async function stopMeeting() {
 	try {
 		await stopRecording();
 	} catch (err) {
+		console.log(err)
 		console.warn("Error stopping recording:", err.message);
 	}
 
 	try {
 		await closeWebView();
 	} catch (err) {
+		console.log(err)
 		console.warn("Error closing WebView:", err.message);
 	}
 
 	try {
 		await hideCameraSelfView();
 	} catch (err) {
+		console.log(err)
 		console.warn("Error hiding self-view:", err.message);
 	}
 
 	try {
 		await hideJibbPanel();
 	} catch (err) {
+		console.log(err)
 		console.warn("Error hiding JIBB panel:", err.message);
 	}
 
 	try {
 		await setDeviceCameraToBeforeSettings();
 	} catch (err) {
+		console.log(err)
 		console.warn("Error restoring camera settings:", err.message);
 	}
 }
@@ -300,12 +352,14 @@ async function getDeviceCurrentCameraSettings() {
 	try {
 		CurrentDeviceCameraSettings.PresenterTrack = await xapi.Config.Cameras.PresenterTrack.Enabled.get();
 	} catch (err) {
+		console.log(err)
 		console.warn("PresenterTrack not available:", err.message);
 	}
 
 	try {
 		CurrentDeviceCameraSettings.SpeakerTrack = await xapi.Status.Cameras.SpeakerTrack.Status.get();
 	} catch (err) {
+		console.log(err)
 		console.warn("SpeakerTrack not available:", err.message);
 	}
 
@@ -320,6 +374,7 @@ async function getDeviceCurrentCameraSettings() {
 			console.warn("No camera data found for position.");
 		}
 	} catch (err) {
+		console.log(err)
 		console.warn("Error retrieving camera position:", err.message);
 	}
 
@@ -336,6 +391,7 @@ async function setDeviceCameraToBeforeSettings() {
 			await xapi.Config.Cameras.PresenterTrack.Enabled.set(true);
 		}
 	} catch (err) {
+		console.log(err)
 		console.warn("PresenterTrack not supported or failed to re-enable:", err.message);
 	}
 
@@ -345,6 +401,7 @@ async function setDeviceCameraToBeforeSettings() {
 			await xapi.Command.Cameras.SpeakerTrack.Activate();
 		}
 	} catch (err) {
+		console.log(err)
 		console.warn("SpeakerTrack not supported or failed to re-activate:", err.message);
 	}
 
@@ -364,6 +421,7 @@ async function setDeviceCameraToBeforeSettings() {
 			console.warn("No physical cameras found to reset position.");
 		}
 	} catch (err) {
+		console.log(err)
 		console.warn("Camera PositionSet failed or not supported:", err.message);
 	}
 
@@ -394,6 +452,7 @@ async function getCameraPresetId(positionName) {
 		const match = presets.find(item => item.Name === positionName);
 		return match ? match.PresetId : -1;
 	} catch (err) {
+		console.log(err)
 		console.warn("getCameraPresetId failed:", err.message);
 		return -1;
 	}
@@ -483,8 +542,8 @@ function reactToJibbClick() {
 			} catch (err) {
 				xapi.Command.UserInterface.Message.Alert.Display({
 					Duration: 20,
-					Text: err.message,
-					Title: "Essential device settings are missing: HttpClient, or JIBB API access. Please contact your device admin to check settings.",
+					Text: "HttpClient, or JIBB API access. Please contact your device admin to check settings.",
+					Title: "Essential device settings are missing",
 				})
 				hideJibbPanel()
 				throw (err)
