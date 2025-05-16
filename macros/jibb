@@ -176,63 +176,40 @@ async function startTheMeeting() {
 	await EventBus.startStream(req)
 }
 
-async function getAvailableCameraList() {
-	return await EventBus.getCameraList(SessionDetails.clientId)
-}
 
 async function getCameraId() {
-	try {
-		const cameraList = await getAvailableCameraList();
-		console.log("Raw camera list received from EventBus.getCameraList():", cameraList);
+  try {
+    const cameraList = await EventBus.getCameraList(SessionDetails.clientId);
+    console.log("Raw camera list received from EventBus.getCameraList():", cameraList);
 
-		if (!Array.isArray(cameraList) || cameraList.length === 0) {
-			console.warn("Camera list is empty or not an array.");
-			return Promise.reject("No cameras detected or accessible.");
-		}
+    if (!Array.isArray(cameraList) || cameraList.length === 0) {
+      console.warn("Camera list is empty or not an array.");
+      return Promise.reject("No cameras detected or accessible.");
+    }
 
-		const validCameras = [];
-		const invalidCameras = [];
+    const validCameras = cameraList.filter(cam => cam?.id?.trim());
+    const invalidCameras = cameraList.filter(cam => !cam?.id?.trim());
 
-		cameraList.forEach((cam, index) => {
-			if (cam?.id && typeof cam.id === "string" && cam.id.trim().length > 0) {
-				validCameras.push(cam);
-			} else {
-				invalidCameras.push({ index, cam });
-			}
-		});
+    validCameras.forEach((cam, i) => {
+      console.log(`  [${i + 1}] ID: ${cam.id}, Name: ${cam.name || "N/A"}`);
+    });
 
-		// Log valid cameras
-		if (validCameras.length > 0) {
-			console.log("Valid accessible cameras:");
-			validCameras.forEach((cam, i) => {
-				console.log(`  [${i + 1}] ID: ${cam.id}, Name: ${cam.name || "N/A"}, Status: ${cam.status || "unknown"}`);
-			});
+    if (invalidCameras.length > 0) {
+      invalidCameras.forEach((cam, index) => {
+        console.warn(`  [${index + 1}] Camera object is invalid or missing 'id':`, cam);
+      });
+    }
 
-			// Use the first valid camera
-			SessionDetails.cameraId = validCameras[0].id;
-		} else {
-			console.warn("No valid cameras found in the list.");
-			// Log invalids anyway for debugging
-		}
+    if (validCameras.length === 0) {
+      return Promise.reject("No valid camera ID available.");
+    }
 
-		// Log invalid cameras
-		if (invalidCameras.length > 0) {
-			console.warn(" Invalid or missing camera IDs:");
-			invalidCameras.forEach(({ index, cam }) => {
-				console.warn(`  [${index + 1}] Camera object is invalid or missing 'id':`, cam);
-			});
-		}
-
-		if (validCameras.length === 0) {
-			return Promise.reject("No valid camera ID available.");
-		}
-	} catch (err) {
-		console.log(err);
-		console.warn("Error in getCameraId:", err.message);
-		return Promise.reject("Camera detection failed: " + err.message);
-	}
+    SessionDetails.cameraId = validCameras[0].id;
+  } catch (err) {
+    console.warn("Error in getCameraId:", err.message);
+    return Promise.reject("Camera detection failed: " + err.message);
+  }
 }
-
 
 async function getWebClinetId() {
 	let statusList = await EventBus.getClientStatusList()
@@ -318,33 +295,38 @@ async function stopRecording() {
 	}
 }
 
-async function setCameraPreset(postionName) {
-	if (CurrentDeviceCameraSettings.SettingsCleared) {
-		await getDeviceCurrentCameraSettings()
-	}
+async function setCameraPreset(positionName) {
+  if (CurrentDeviceCameraSettings.SettingsCleared) {
+    await getDeviceCurrentCameraSettings();
+  }
 
-	try {
-		await xapi.Config.Cameras.PresenterTrack.Enabled.set(false)
-	} catch (err) {
-		console.warn("This device does not ahave Presenter track")
-	}
-	try {
-		await xapi.Command.Cameras.SpeakerTrack.Deactivate();
-	} catch (err) {
-		console.warn("This device does not ahave Speaker track")
-	}
+  try {
+    await xapi.Config.Cameras.PresenterTrack.Enabled.set(false);
+  } catch (err) {
+    console.warn("This device does not have PresenterTrack");
+  }
 
-	let PresetId = await getCameraPresetId(postionName)
-	if (PresetId == -1) {
-		PresetId = await getCameraPresetId("Jibb")
-	}
-	if (PresetId == -1) {
-		PresetId = await getCameraPresetId("jibb")
-	}
+  try {
+    await xapi.Command.Cameras.SpeakerTrack.Deactivate();
+  } catch (err) {
+    console.warn("This device does not have SpeakerTrack");
+  }
 
-	if (PresetId != -1) {
-		xapi.Command.Camera.Preset.Activate({ PresetId: PresetId })
-	}
+  const presetNamesToTry = [positionName, "Jibb", "jibb"];
+  for (const name of presetNamesToTry) {
+    const PresetId = await getCameraPresetId(name);
+    if (PresetId !== -1) {
+      try {
+        console.log(`Activating preset '${name}' (ID: ${PresetId})`);
+        await xapi.Command.Camera.Preset.Activate({ PresetId });
+        return; // success
+      } catch (err) {
+        console.warn(`Activation failed for preset '${name}' (ID: ${PresetId}):`, err.message);
+      }
+    }
+  }
+
+  console.warn("No usable preset found. Skipping camera position restore.");
 }
 
 async function getDeviceCurrentCameraSettings() {
@@ -439,23 +421,31 @@ function clearCurrentDeviceCameraSettings() {
 }
 
 async function getCameraPresetId(positionName) {
-	try {
-		const cameras = await xapi.Status.Cameras.Camera.get();
-		if (!Array.isArray(cameras) || cameras.length === 0) {
-			console.warn("No cameras available for preset lookup");
-			return -1;
-		}
-		const cameraId = cameras[0].id || 1;
-		const json = await xapi.Command.Camera.Preset.List({ CameraId: cameraId, DefaultPosition: false });
-		const presets = json?.Preset || [];
+  try {
+    const cameras = await xapi.Status.Cameras.Camera.get();
+    if (!Array.isArray(cameras) || cameras.length === 0) {
+      console.warn("No cameras available for preset lookup");
+      return -1;
+    }
 
-		const match = presets.find(item => item.Name === positionName);
-		return match ? match.PresetId : -1;
-	} catch (err) {
-		console.log(err)
-		console.warn("getCameraPresetId failed:", err.message);
-		return -1;
-	}
+    const availableCameraIds = cameras.map(c => c.id);
+    const primaryCameraId = availableCameraIds[0] || 1;
+
+    const { Preset: presets = [] } = await xapi.Command.Camera.Preset.List({
+      CameraId: primaryCameraId,
+      DefaultPosition: false
+    });
+
+    const match = presets.find(
+      preset => preset.Name === positionName &&
+        (!preset.CameraId || availableCameraIds.includes(preset.CameraId))
+    );
+
+    return match?.PresetId ?? -1;
+  } catch (err) {
+    console.warn("Failed to fetch preset ID:", err.message);
+    return -1;
+  }
 }
 
 
