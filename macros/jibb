@@ -313,21 +313,44 @@ async function setCameraPreset(positionName) {
   }
 
   const presetNamesToTry = [positionName, "Jibb", "jibb"];
-  for (const name of presetNamesToTry) {
-    const PresetId = await getCameraPresetId(name);
-    if (PresetId !== -1) {
-      try {
-        console.log(`Activating preset '${name}' (ID: ${PresetId})`);
-        await xapi.Command.Camera.Preset.Activate({ PresetId });
-        return; // success
-      } catch (err) {
-        console.warn(`Activation failed for preset '${name}' (ID: ${PresetId}):`, err.message);
+
+  try {
+    const allCameras = await xapi.Status.Cameras.Camera.get();
+    if (!Array.isArray(allCameras) || allCameras.length === 0) {
+      console.warn("No cameras available for preset lookup");
+      return;
+    }
+
+    for (const cam of allCameras) {
+      const camId = cam.id;
+      for (const name of presetNamesToTry) {
+        try {
+          const { Preset: presets = [] } = await xapi.Command.Camera.Preset.List({
+            CameraId: camId,
+            DefaultPosition: false
+          });
+
+          const match = presets.find(preset =>
+            preset.Name === name && (!preset.CameraId || preset.CameraId === camId)
+          );
+
+          if (match) {
+            console.log(`Activating preset '${name}' (ID: ${match.PresetId}) on CameraId: ${camId}`);
+            await xapi.Command.Camera.Preset.Activate({ PresetId: match.PresetId });
+            return;
+          }
+        } catch (err) {
+          console.warn(`Error while listing presets for camera ${camId}:`, err.message);
+        }
       }
     }
+  } catch (err) {
+    console.warn("Preset activation failed due to camera or preset listing error:", err.message);
   }
 
-  console.warn("No usable preset found. Skipping camera position restore.");
+  console.warn("No usable preset found on any available camera. Skipping camera position restore.");
 }
+
 
 async function getDeviceCurrentCameraSettings() {
 	console.log("getDeviceCurrentCameraSettings");
