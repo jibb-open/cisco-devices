@@ -316,6 +316,8 @@ async function setCameraPreset(positionName) {
 
   try {
     const allCameras = await xapi.Status.Cameras.Camera.get();
+    console.log("All hardware cameras from xapi.Status.Cameras.Camera.get():", allCameras);
+
     if (!Array.isArray(allCameras) || allCameras.length === 0) {
       console.warn("No cameras available for preset lookup");
       return;
@@ -323,13 +325,15 @@ async function setCameraPreset(positionName) {
 
     for (const cam of allCameras) {
       const camId = cam.id;
-      for (const name of presetNamesToTry) {
-        try {
-          const { Preset: presets = [] } = await xapi.Command.Camera.Preset.List({
-            CameraId: camId,
-            DefaultPosition: false
-          });
+      try {
+        const { Preset: presets = [] } = await xapi.Command.Camera.Preset.List({
+          CameraId: camId,
+          DefaultPosition: false
+        });
 
+        console.log(`Presets for camera ${camId}:`, presets);
+
+        for (const name of presetNamesToTry) {
           const match = presets.find(preset =>
             preset.Name === name && (!preset.CameraId || preset.CameraId === camId)
           );
@@ -339,9 +343,9 @@ async function setCameraPreset(positionName) {
             await xapi.Command.Camera.Preset.Activate({ PresetId: match.PresetId });
             return;
           }
-        } catch (err) {
-          console.warn(`Error while listing presets for camera ${camId}:`, err.message);
         }
+      } catch (err) {
+        console.warn(`Error while listing presets for camera ${camId}:`, err.message);
       }
     }
   } catch (err) {
@@ -370,6 +374,7 @@ async function getDeviceCurrentCameraSettings() {
 
 	try {
 		const cameras = await xapi.Status.Cameras.Camera.get();
+		console.log("Cameras found in getDeviceCurrentCameraSettings:", cameras);
 		if (Array.isArray(cameras) && cameras.length > 0) {
 			const cam = cameras[0]; // safely pick first camera
 			CurrentDeviceCameraSettings.Pan = cam.Position?.Pan || 0;
@@ -442,35 +447,6 @@ function clearCurrentDeviceCameraSettings() {
 	CurrentDeviceCameraSettings.Tilt = 0
 	CurrentDeviceCameraSettings.Zoom = 0
 }
-
-async function getCameraPresetId(positionName) {
-  try {
-    const cameras = await xapi.Status.Cameras.Camera.get();
-    if (!Array.isArray(cameras) || cameras.length === 0) {
-      console.warn("No cameras available for preset lookup");
-      return -1;
-    }
-
-    const availableCameraIds = cameras.map(c => c.id);
-    const primaryCameraId = availableCameraIds[0] || 1;
-
-    const { Preset: presets = [] } = await xapi.Command.Camera.Preset.List({
-      CameraId: primaryCameraId,
-      DefaultPosition: false
-    });
-
-    const match = presets.find(
-      preset => preset.Name === positionName &&
-        (!preset.CameraId || availableCameraIds.includes(preset.CameraId))
-    );
-
-    return match?.PresetId ?? -1;
-  } catch (err) {
-    console.warn("Failed to fetch preset ID:", err.message);
-    return -1;
-  }
-}
-
 
 function closeWebView() {
 	return xapi.Command.UserInterface.WebView.Clear({ Target: "PersistentWebApp" });
