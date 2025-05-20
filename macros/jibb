@@ -316,6 +316,8 @@ async function setCameraPreset(positionName) {
 
   try {
     const allCameras = await xapi.Status.Cameras.Camera.get();
+	console.log("All hardware cameras from xapi.Status.Cameras.Camera.get():", allCameras);
+
     if (!Array.isArray(allCameras) || allCameras.length === 0) {
       console.warn("No cameras available for preset lookup");
       return;
@@ -370,6 +372,7 @@ async function getDeviceCurrentCameraSettings() {
 
 	try {
 		const cameras = await xapi.Status.Cameras.Camera.get();
+		console.log("Cameras found in getDeviceCurrentCameraSettings:", cameras);
 		if (Array.isArray(cameras) && cameras.length > 0) {
 			const cam = cameras[0]; // safely pick first camera
 			CurrentDeviceCameraSettings.Pan = cam.Position?.Pan || 0;
