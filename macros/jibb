@@ -449,7 +449,7 @@ function clearCurrentDeviceCameraSettings() {
 }
 
 function closeWebView() {
-	return xapi.Command.UserInterface.WebView.Clear({ Target: "PersistentWebApp" });
+	return xapi.Command.UserInterface.WebView.Clear({ Target: "OSD" });
 }
 
 function hideCameraSelfView() {
