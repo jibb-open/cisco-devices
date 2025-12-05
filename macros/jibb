@@ -61,7 +61,7 @@ xapi.Event.CallDisconnect.on(async () => {
 
 	if (!wasRunning) return;
 
-	logIfRunning("Call disconnected → stopping JIBB...");
+	logIfRunning("Call disconnected > stopping JIBB...");
 
 	try {
 		await stopMeeting();
@@ -88,7 +88,7 @@ xapi.Event.CallSuccessful.on(async () => {
 	logIfRunning("New meeting connected.");
 
 	if (SessionDetails.isRecordingInProgress) {
-		logIfRunning("Recording is already in progress → nothing to do.");
+		logIfRunning("Recording is already in progress > nothing to do.");
 		return;
 	}
 
@@ -108,11 +108,11 @@ xapi.Event.CallSuccessful.on(async () => {
 	SessionDetails.userToken = await Auth.getUserToken();
 
 	if (!idObj || (!idObj.meetingNumber && !idObj.webLink)) {
-		console.log("No valid meetingNumber or webLink → cannot auto-start recording.");
+		console.log("No valid meetingNumber or webLink > cannot auto-start recording.");
 		return;
 	}
 
-	logIfRunning("Auto-detected meeting → starting recording...");
+	logIfRunning("Auto-detected meeting > starting recording...");
 
 	startRecording();
 });
@@ -175,7 +175,7 @@ async function getHostEmail(orgId, meetingIdentifier) {
 		qs.push(`web_link=${encodeURIComponent(meetingIdentifier.webLink)}`);
 
 	if (qs.length === 0) {
-		console.log("No meetingNumber or webLink → skipping getHostEmail");
+		console.log("No meetingNumber or webLink > skipping getHostEmail");
 		return null;
 	}
 
@@ -460,7 +460,7 @@ async function openMeetingUrlInWebView() {
 }
 
 async function stopMeeting() {
-	logIfRunning("stopMeeting …");
+	logIfRunning("stopMeeting...");
 	RecordingEmail = "";
 	try {
 		await stopRecording();
@@ -502,7 +502,7 @@ async function stopMeeting() {
 
 async function startRecording() {
 	if (SessionDetails.isRecordingInProgress) {
-		logIfRunning("Recording already in progress → skip startRecording");
+		logIfRunning("Recording already in progress > skip startRecording");
 		return;
 	}
 
@@ -525,7 +525,7 @@ async function startRecording() {
 		const idObj = SessionDetails.externalMeetingId;
 
 		if (!idObj || (!idObj.meetingNumber && !idObj.webLink)) {
-			logIfRunning("No valid meetingNumber or webLink → cannot fetch host email.");
+			logIfRunning("No valid meetingNumber or webLink > cannot fetch host email.");
 			return;
 		}
 
@@ -536,7 +536,7 @@ async function startRecording() {
 			logIfRunning("Using Host Email: " + hostEmail);
 			recordingTargetEmail = hostEmail;
 		} else {
-			logIfRunning("Host email not found → cannot start recording.");
+			logIfRunning("Host email not found > cannot start recording.");
 			return;
 		}
 	}
