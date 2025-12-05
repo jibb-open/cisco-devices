@@ -461,7 +461,7 @@ async function openMeetingUrlInWebView() {
 
 async function stopMeeting() {
 	logIfRunning("stopMeeting...");
-	RecordingEmail = "";
+
 	try {
 		await stopRecording();
 	} catch (err) {
@@ -801,7 +801,7 @@ function reactToStartAndStopClick() {
 							WidgetId: "jibb_start_toggle",
 							Value: "stop"
 						});
-
+						RecordingEmail = "";
 						stopMeeting();
 					}
 					break;
