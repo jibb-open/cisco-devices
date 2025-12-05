@@ -506,7 +506,7 @@ async function startRecording() {
 		return;
 	}
 
-	SessionDetails.isRecordingInProgress = true;
+
 	logIfRunning("startRecording ... ");
 
 	const title = await createTitle();
@@ -541,6 +541,7 @@ async function startRecording() {
 		}
 	}
 	logIfRunning("This eamil will get pdf: ", recordingTargetEmail);
+
 	try {
 		await Recording.startRecording({
 			alternativeEmail: recordingTargetEmail,
@@ -550,7 +551,7 @@ async function startRecording() {
 			title: title
 		});
 
-
+		SessionDetails.isRecordingInProgress = true;
 
 	} catch (err) {
 		console.log("Recording Error:", err);
