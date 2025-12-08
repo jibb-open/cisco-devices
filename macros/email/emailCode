@@ -1,31 +1,22 @@
 function reactToEmailEdit() {
-	xapi.Event.UserInterface.Extensions.Widget.Action.on((event) => {
-		if (event.Type == "released") {
-			console.log(event.Type)
-			switch (event.WidgetId) {
-				case "jibb_email":
-					//ask for record email
-					xapi.Command.UserInterface.Message.TextInput.Display({
-						FeedbackId: "user_email",
-						Placeholder: RecordingEmail,
-						Title: "Set your Auto-Save Email",
-						Text: "JIBB will email you an Auto-Saved PDF of your whiteboard content after you end the session",
-						Placeholder: "Enter email address",
-					})
-					break
-				default:
-					break
-			}
-		}
-	})
+  xapi.Event.UserInterface.Extensions.Widget.Action.on((event) => {
+    if (event.Type === "released" && event.WidgetId === "jibb_email") {
+
+      xapi.Command.UserInterface.Message.TextInput.Display({
+        FeedbackId: "user_email",
+        Title: "Set your Auto-Save Email",
+        Text: "JIBB will send your PDF automatically. If empty, the meeting host will receive it.",
+        Placeholder: RecordingEmail || "Enter email address",
+      });
+
+    }
+  });
 }
 
 function setEmailistener() {
-	xapi.Event.UserInterface.Message.TextInput.Response.on(async (event) => {
-		if (event.FeedbackId === "user_email") {
-			stringReplace(`Current Email: ${RecordingEmail}`, `Current Email: ${event.Text}`)
-			addPanel()
-			RecordingEmail = event.Text
-		}
-	})
+  xapi.Event.UserInterface.Message.TextInput.Response.on(async (event) => {
+    if (event.FeedbackId === "user_email") {
+      RecordingEmail = event.Text.trim();
+    }
+  });
 }
