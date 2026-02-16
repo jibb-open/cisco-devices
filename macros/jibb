@@ -7,6 +7,28 @@ let MeetingAPI = JIBB.Meeting
 let Auth = JIBB.Auth
 let EventBus = JIBB.EventBus
 let Recording = JIBB.Recording
+let ShareMeetingStatus = JIBB.ShareMeetingStatus
+
+let recordingStartInFlight = false;
+
+const MEETING_STATE = {
+	NONE: "NONE",
+	TEAMS: "TEAMS",
+	WEBEX: "WEBEX",
+};
+
+const DEVICE_MODE = {
+	WEBEX: "webex",
+	MTR: "mtr",
+};
+
+let deviceMode = DEVICE_MODE.WEBEX;
+
+const MEETING_PROVIDER = {
+	WEBEX: "webex",
+	TEAMS: "microsoft",
+	UNKNOWN: "unknown",
+};
 
 const SurfaceType = {
 	PAPER: "PAPER",
@@ -19,13 +41,12 @@ function getHostname(url) {
 }
 
 function Config(apiKey) {
-
 	this.apiKey = apiKey
 	this.webURL = "#WebAppUrl#"
-	xapi.Command.WebEngine.MediaAccess.add({ Hostname: getHostname(this.webURL), Device: "Camera" })
 	JIBB.Config.setApiBaseURL("#ApiUrl#")
-	JIBB.Auth.configure({ apiKey: apiKey })
+	JIBB.Auth.configure({ apiKey })
 }
+
 
 let SessionDetails = {
 	meetingId: "",
@@ -51,73 +72,208 @@ let CurrentDeviceCameraSettings = {
 	Zoom: 0,
 }
 
+function asBool(v) {
+	return v === true || v === "True" || v === "true" || v === 1 || v === "1";
+}
 
-xapi.Event.CallDisconnect.on(async () => {
+async function getTeamsInCall() {
+	const v = await safe(() => xapi.Status.MicrosoftTeams.Calling.InCall.get(), "Teams.Calling.InCall");
+	return asBool(v);
+}
 
-	const wasRunning = SessionDetails.isJibbRunning;
+async function getMeetingState() {
+	// Always check Teams first (safe even on non-MTR: it will return null/false)
+	const inTeamsCall = await getTeamsInCall();
+	if (inTeamsCall) return MEETING_STATE.TEAMS;
 
-	SessionDetails.externalMeetingId = null;
-	SessionDetails.provider = null;
+	// Then check RoomOS call stack
+	const calls = await safe(() => xapi.Status.Call.get(), "Status.Call.get()");
+	if (!Array.isArray(calls) || calls.length === 0) {
+		return MEETING_STATE.NONE;
+	}
 
-	if (!wasRunning) return;
+	const call = calls[0];
+	const provider = detectMeetingProviderFromCall(call);
 
-	logIfRunning("Call disconnected > stopping JIBB...");
+	if (provider === MEETING_PROVIDER.TEAMS) return MEETING_STATE.TEAMS;
+	if (provider === MEETING_PROVIDER.WEBEX) return MEETING_STATE.WEBEX;
+
+	// If unknown provider but call exists, you can decide your default:
+	return MEETING_STATE.WEBEX;
+}
+
+
+
+async function handleStandaloneRecordingFlow(title) {
+	logIfRunning("[JIBB][NONE] standalone flow started");
+
+	const ok = await ensureMeetingContextReady({ needUrl: false, timeoutMs: 25000 });
+	if (!ok) return;
 
 	try {
-		await stopMeeting();
+		const payload = {
+			sensivityLevel: 2,
+			meetingId: SessionDetails.meetingId,
+			meetingToken: SessionDetails.meetingToken,
+			title,
+			// no alternativeEmail, no deviceSerialNumber
+		};
+
+		console.log("[JIBB][NONE][Rec] payload:", payload);
+
+		await Recording.startRecording(payload);
+		SessionDetails.isRecordingInProgress = true;
+		logIfRunning("[JIBB][NONE] Recording started");
+	} catch (err) {
+		console.log("[JIBB][NONE] Recording Error:", err);
+	}
+}
+
+
+async function waitUntil(predicate, timeoutMs = 20000, intervalMs = 250) {
+	const start = Date.now();
+	while (Date.now() - start < timeoutMs) {
+		try {
+			if (await predicate()) return true;
+		} catch { }
+		await sleep(intervalMs);
+	}
+	return false;
+}
+
+async function ensureMeetingContextReady({ needUrl = false, timeoutMs = 25000 } = {}) {
+	// Wait for meetingId (autoStartMeeting sets it early)
+	const hasMeetingId = await waitUntil(() => !!SessionDetails.meetingId, timeoutMs, 250);
+	if (!hasMeetingId) {
+		console.log("[JIBB] Meeting context not ready: missing meetingId");
+		return false;
+	}
+
+	// If meetingToken isn't ready yet, try to fetch it here (race-safe)
+	if (!SessionDetails.meetingToken) {
+		try {
+			await gettingMeetingToken();
+		} catch (e) {
+			console.log("[JIBB] gettingMeetingToken failed (will keep waiting):", e?.message || e);
+		}
+	}
+
+	const hasMeetingToken = await waitUntil(() => !!SessionDetails.meetingToken, timeoutMs, 250);
+	if (!hasMeetingToken) {
+		console.log("[JIBB] Meeting context not ready: missing meetingToken");
+		return false;
+	}
+
+	if (needUrl) {
+		const hasUrl = await waitUntil(() => !!SessionDetails.meetingUrl, timeoutMs, 250);
+		if (!hasUrl) {
+			console.log("[JIBB] Meeting context not ready: missing meetingUrl (Teams share needs it)");
+			return false;
+		}
+	}
+
+	return true;
+}
+
+function registerTeamsCallHandlers() {
+	// fires when Teams call starts/ends (works in MTR mode)
+	try {
+		xapi.Status.MicrosoftTeams.Calling.InCall.on(async (v) => {
+			deviceMode = DEVICE_MODE.MTR; // Teams stack exists => this is MTR
+
+			const inCall = asBool(v);
+			console.log("[JIBB][Teams] InCall changed:", inCall);
+
+			if (inCall) {
+				if (!SessionDetails.isJibbRunning) return;
+
+				// meeting connected start Teams flow (share+record)
+				SessionDetails.provider = MEETING_PROVIDER.TEAMS;
+				startRecording().catch(e => console.log("[JIBB] startRecording failed:", e?.message || e));
+				return;
+			}
+
+			// call ended stop everything
+			if (SessionDetails.isJibbRunning) {
+				await stopMeeting();
+
+				// update UI toggle
+				try {
+					await xapi.Command.UserInterface.Extensions.Widget.SetValue({
+						WidgetId: "jibb_start_toggle",
+						Value: "stop",
+					});
+				} catch { }
+			}
+		});
+	} catch (e) {
+		console.log("[JIBB][Teams] InCall path not available; skipping Teams handlers:", e?.message || e);
+	}
+}
+
+
+function registerWebexCallHandlers() {
+	xapi.Event.CallDisconnect.on(async () => {
+
+		const wasRunning = SessionDetails.isJibbRunning;
+
+		SessionDetails.externalMeetingId = null;
+		SessionDetails.provider = null;
+
+
+		if (!wasRunning) return;
+
+		logIfRunning("Call disconnected > stopping JIBB...");
 
 		try {
-			await xapi.Command.UserInterface.Extensions.Widget.SetValue({
-				WidgetId: "jibb_start_toggle",
-				Value: "stop"
-			});
-		} catch (uiErr) {
-			console.warn("Failed to update toggle UI:", uiErr.message);
+			await stopMeeting();
+
+
+			try {
+				await xapi.Command.UserInterface.Extensions.Widget.SetValue({
+					WidgetId: "jibb_start_toggle",
+					Value: "stop"
+				});
+			} catch (uiErr) {
+				console.warn("Failed to update toggle UI:", uiErr.message);
+			}
+
+			SessionDetails.isJibbRunning = false;
+
+		} catch (err) {
+			console.warn("Error stopping JIBB after meeting ended:", err.message);
+		}
+	});
+
+	xapi.Event.CallSuccessful.on(async () => {
+		if (!SessionDetails.isJibbRunning) return;
+		logIfRunning("New meeting connected.");
+
+		if (SessionDetails.isRecordingInProgress) {
+			logIfRunning("Recording is already in progress > nothing to do.");
+			return;
 		}
 
-		SessionDetails.isJibbRunning = false;
+		const calls = await xapi.Status.Call.get();
+		const call = calls?.[0];
+		if (!call) return;
 
-	} catch (err) {
-		console.warn("Error stopping JIBB after meeting ended:", err.message);
-	}
-});
+		// still useful for WEBEX host-email flow
+		SessionDetails.provider = detectMeetingProviderFromCall(call);
+		SessionDetails.externalMeetingId = await extractExternalMeetingId(call);
 
-xapi.Event.CallSuccessful.on(async () => {
+		logIfRunning("Provider:", SessionDetails.provider);
+		logIfRunning("Meeting Identifier:", SessionDetails.externalMeetingId);
 
-	if (!SessionDetails.isJibbRunning) return;
-	logIfRunning("New meeting connected.");
+		logIfRunning("CallSuccessful > startRecording...");
+		logRecordingContext("CallSuccessful before startRecording");
 
-	if (SessionDetails.isRecordingInProgress) {
-		logIfRunning("Recording is already in progress > nothing to do.");
-		return;
-	}
+		startRecording().catch(e =>
+			console.log("[JIBB] startRecording failed:", e?.message || e)
+		);
+	});
 
-	const calls = await xapi.Status.Call.get();
-	const call = calls?.[0];
-	if (!call) return;
-
-	const idObj = await extractExternalMeetingId(call);
-	const provider = await detectMeetingProvider();
-
-	SessionDetails.externalMeetingId = idObj;
-	SessionDetails.provider = provider;
-
-	logIfRunning("Meeting Identifier:", idObj);
-	logIfRunning("Provider:", provider);
-
-	SessionDetails.userToken = await Auth.getUserToken();
-
-	if (!idObj || (!idObj.meetingNumber && !idObj.webLink)) {
-		console.log("No valid meetingNumber or webLink > cannot auto-start recording.");
-		return;
-	}
-
-	logIfRunning("Auto-detected meeting > starting recording...");
-
-	startRecording();
-});
-
-
+}
 
 async function safe(fn, label = "") {
 	try {
@@ -142,26 +298,20 @@ function convertSipToWebLink(sip) {
 	return `https://${domain}/meet/${username}`;
 }
 
-
-
-async function detectMeetingProvider() {
-	const calls = await xapi.Status.Call.get();
-	if (!calls || calls.length === 0) return null;
-
-	const call = calls[0];
+function detectMeetingProviderFromCall(call) {
 	const name = call.DisplayName || "";
 	const cb = call.CallbackNumber || "";
 	const proto = call.Protocol || "";
 
-	if (/teams\.microsoft\.com/i.test(cb)) return "microsoft";
-	if (/Teams Meeting/i.test(name)) return "microsoft";
-	if (/WebRTC/i.test(proto) && /teams/i.test(cb)) return "microsoft";
+	if (/teams\.microsoft\.com/i.test(cb)) return MEETING_PROVIDER.TEAMS;
+	if (/Teams Meeting/i.test(name)) return MEETING_PROVIDER.TEAMS;
+	if (/WebRTC/i.test(proto) && /teams/i.test(cb)) return MEETING_PROVIDER.TEAMS;
 
-	if (/\.webex\.com/i.test(cb)) return "webex";
-	if (/spark:/i.test(cb)) return "webex";
-	if (/Spark/i.test(proto)) return "webex";
+	if (/\.webex\.com/i.test(cb)) return MEETING_PROVIDER.WEBEX;
+	if (/spark:/i.test(cb)) return MEETING_PROVIDER.WEBEX;
+	if (/Spark/i.test(proto)) return MEETING_PROVIDER.WEBEX;
 
-	return "unknown";
+	return MEETING_PROVIDER.UNKNOWN;
 }
 
 
@@ -263,13 +413,132 @@ async function getJibbOrganizationId() {
 
 async function getMeetingProviderAndId() {
 	const calls = await xapi.Status.Call.get();
+	console.log("[JIBB][DBG] Status.Call.get():", JSON.stringify(calls || [], null, 2));
+
 	if (!calls || calls.length === 0) return null;
 
 	const call = calls[0];
-	const provider = await detectMeetingProvider();
+	const provider = detectMeetingProviderFromCall(call);
 	const idObj = await extractExternalMeetingId(call);
 
 	return { provider, meetingIdentifier: idObj };
+}
+
+
+async function getDeviceSerialNumber() {
+	// Best practical identifier on RoomOS (serial)
+	try {
+		const sn = await xapi.Status.SystemUnit.Hardware.Module.SerialNumber.get();
+		const v = String(sn || "").trim();
+		if (!v) {
+			console.log("[JIBB][Teams] device serial is empty");
+			return null;
+		}
+		return v;
+	} catch (e) {
+		console.log("[JIBB][Teams] failed to get SerialNumber:", e?.message || e);
+		return null;
+	}
+}
+
+async function shareTeamsMeetingToChat(deviceSerialNumber) {
+	const orgId = await getJibbOrganizationId();
+	if (!orgId) throw new Error("Missing organizationId");
+
+	if (!deviceSerialNumber) throw new Error("Missing device_serial_number");
+	if (!SessionDetails.meetingId) throw new Error("Missing meetingId");
+
+	const shareId = await MeetingAPI.createTemporaryShare({
+		meetingId: SessionDetails.meetingId,
+		permission: 13,
+	});
+	if (!shareId) throw new Error("can not create Share Id");
+
+	const meetingUrl = `${config.webURL}/workspace/${SessionDetails.meetingId}/${shareId}`;
+	if (!meetingUrl) throw new Error("Missing meeting_url");
+
+	const url = `#ApiUrl#/v1/microsoft-integration/${orgId}/meeting/share`;
+
+	const payloadStr = JSON.stringify({
+		meeting_url: meetingUrl,
+		device_serial_number: deviceSerialNumber,
+	});
+
+	console.log("[JIBB][Teams] POST", url);
+	console.log("[JIBB][Teams] Body JSON:", payloadStr);
+
+	const notify = async (text, durationSeconds = 15) => {
+		try {
+			await xapi.Command.Audio.Sound.Play({ Sound: "Announcement" });
+		} catch (soundErr) {
+			console.log("[JIBB][Teams] Audio.Sound.Play failed/unsupported:", soundErr?.message || soundErr);
+		}
+
+		try {
+			await xapi.Command.UserInterface.Message.Alert.Display({
+				Title: "JIBB",
+				Text: text,
+				Duration: durationSeconds,
+			});
+		} catch (uiErr) {
+			console.log("[JIBB][Teams] Alert.Display failed:", uiErr?.message || uiErr);
+		}
+	};
+
+	const res = await xapi.Command.HttpClient.Post(
+		{
+			Url: url,
+			Header: [
+				"Content-Type: application/json",
+				`x-jibb-user-jwt: ${SessionDetails.userToken}`,
+			],
+			ResultBody: "PlainText",
+		},
+		payloadStr
+	);
+
+	console.log("[JIBB][Teams] Response:", res);
+
+	if (String(res?.StatusCode) !== "200") {
+		throw new Error(`meeting/share failed. StatusCode=${res?.StatusCode}`);
+	}
+
+	let bodyJson = null;
+	try {
+		bodyJson = res?.Body ? JSON.parse(res.Body) : null;
+	} catch (parseErr) {
+		console.log("[JIBB][Teams] Response body is not JSON:", parseErr?.message || parseErr);
+	}
+
+	const status = bodyJson?.status ?? bodyJson?.Status;
+
+	switch (JIBB.normalizeShareMeetingStatus(status)) {
+		case ShareMeetingStatus.PENDING_BOT:
+			await notify(
+				"Add JIBB to this meeting: in Microsoft Teams on your (phone/laptop), click Apps in the meeting toolbar (or More (...) Apps), search JIBB, then click Add.",
+				60
+			);
+			return false;
+
+		case ShareMeetingStatus.CURRENT_MEETING_NOT_FOUND:
+		case 3:
+			await notify(
+				"This meeting is not scheduled, so the JIBB app ca not share the JIBB meeting in the chat box",
+				15
+			);
+			return false;
+
+		case ShareMeetingStatus.MICROSOFT_TEAM_NOT_CONNECTED:
+		case 4:
+			await notify(
+				"Something went wrong, so JIBB app ca not share the JIBB meeting in the chat box",
+				15
+			);
+			return false;
+
+		default:
+			return true;
+	}
 }
 
 
@@ -367,7 +636,6 @@ async function autoStartMeeting() {
 	hideCameraSelfView()
 	await generateMeetingLink()
 	await openMeetingUrlInWebView()
-	await sleep(10000)
 
 	try {
 		await getWebClinetId()
@@ -390,9 +658,11 @@ async function autoStartMeeting() {
 	await startTheMeeting()
 	await sleep(5000)
 
-	startRecording()
-}
+	startRecording().catch(e =>
+		console.log("[JIBB] startRecording failed:", e?.message || e)
+	);
 
+}
 
 
 async function startTheMeeting() {
@@ -443,21 +713,51 @@ async function getCameraId() {
 }
 
 async function getWebClinetId() {
-	let statusList = await EventBus.getClientStatusList()
-	console.log("Full statusList from getClientStatusList():", statusList)
+	const maxAttempts = 60;      // up to 60s
+	const retryDelayMs = 1000;
 
-	if (Array.isArray(statusList) && statusList.length > 0 && statusList[0]?.id) {
-		SessionDetails.clientId = statusList[0].id
-	} else {
-		console.error("No valid client ID found in status list")
-		throw new Error("Unable to get a valid client ID")
+	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+		console.log(`[getWebClinetId] attempt ${attempt}/${maxAttempts}`);
+
+		const statusList = await EventBus.getClientStatusList();
+		console.log("Full statusList from getClientStatusList():", statusList);
+
+		// normalize possible shapes
+		const items = Array.isArray(statusList) ? statusList : (statusList ? [statusList] : []);
+
+		//  prefer WEBAPP client if present
+		const webapp = items.find(c =>
+			(c?.clientType === "WEBAPP" || c?.type === "WEBAPP") && c?.id
+		);
+
+		if (webapp?.id) {
+			SessionDetails.clientId = webapp.id;
+			return;
+		}
+
+		// fallback: any id
+		const any = items.find(c => c?.id);
+		if (any?.id) {
+			SessionDetails.clientId = any.id;
+			return;
+		}
+
+		await sleep(retryDelayMs);
 	}
+
+	console.error("No valid client ID found in status list after retries");
+	throw new Error("Unable to get a valid client ID");
 }
+
 
 
 async function openMeetingUrlInWebView() {
-	await xapi.Command.UserInterface.WebView.Display({ Title: "jibb", Url: SessionDetails.meetingUrl })
+	await xapi.Command.UserInterface.WebView.Display({ Title: "jibb", Url: SessionDetails.meetingUrl });
+
+	//  IMPORTANT: wait until WebView is actually loaded, otherwise client list can stay empty
+	await waitForWebViewReady(SessionDetails.meetingUrl, 30000);
 }
+
 
 async function stopMeeting() {
 	logIfRunning("stopMeeting...");
@@ -498,65 +798,184 @@ async function stopMeeting() {
 	}
 	SessionDetails.isRecordingInProgress = false;
 	SessionDetails.isJibbRunning = false;
+
+	SessionDetails.meetingId = "";
+	SessionDetails.meetingToken = "";
+	SessionDetails.meetingUrl = "";
+	SessionDetails.cameraId = "";
+	SessionDetails.clientId = "";
+	SessionDetails.externalMeetingId = null;
+	SessionDetails.provider = null;
+
+	logRecordingContext("stopMeeting completed");
 }
 
-async function startRecording() {
-	if (SessionDetails.isRecordingInProgress) {
-		logIfRunning("Recording already in progress > skip startRecording");
-		return;
-	}
-
-
-	logIfRunning("startRecording ... ");
-
-	const title = await createTitle();
-
-	const callInfo = await getMeetingProviderAndId() || {};
-	if (callInfo.meetingIdentifier) {
-		SessionDetails.externalMeetingId = callInfo.meetingIdentifier;
-		SessionDetails.provider = callInfo.provider;
-	}
+async function handleWebexRecordingFlow(title) {
+	logIfRunning("[JIBB][Webex] recording flow started");
 
 	let recordingTargetEmail = RecordingEmail;
-
-	if (!recordingTargetEmail) {
-		logIfRunning("No RecordingEmail provided. Attempting Host Email lookup...");
+	if (recordingTargetEmail) {
+		logIfRunning("[JIBB][Webex] Using RecordingEmail:", recordingTargetEmail);
+	} else {
+		logIfRunning("[JIBB][Webex] -> Host Email lookup...");
 
 		const idObj = SessionDetails.externalMeetingId;
-
 		if (!idObj || (!idObj.meetingNumber && !idObj.webLink)) {
-			logIfRunning("No valid meetingNumber or webLink > cannot fetch host email.");
+			logIfRunning("[JIBB][Webex] No meetingNumber/webLink -> abort");
 			return;
 		}
 
 		const orgId = await getJibbOrganizationId();
 		const hostEmail = await getHostEmail(orgId, idObj);
 
-		if (hostEmail) {
-			logIfRunning("Using Host Email: " + hostEmail);
-			recordingTargetEmail = hostEmail;
-		} else {
-			logIfRunning("Host email not found > cannot start recording.");
+		if (!hostEmail) {
+			logIfRunning("[JIBB][Webex] Host email not found -> abort");
 			return;
 		}
+
+		logIfRunning("[JIBB][Webex] Using host email:", hostEmail);
+		recordingTargetEmail = hostEmail;
 	}
-	logIfRunning("This eamil will get pdf: ", recordingTargetEmail);
 
 	try {
-		await Recording.startRecording({
-			alternativeEmail: recordingTargetEmail,
+		const payload = {
 			sensivityLevel: 2,
 			meetingId: SessionDetails.meetingId,
 			meetingToken: SessionDetails.meetingToken,
-			title: title
-		});
+			title,
+			alternativeEmail: recordingTargetEmail
+		};
+
+		console.log("[JIBB][Webex][Rec] payload:", payload);
+
+		await Recording.startRecording(payload);
 
 		SessionDetails.isRecordingInProgress = true;
-
+		logIfRunning("[JIBB][Webex] Recording started");
 	} catch (err) {
-		console.log("Recording Error:", err);
+		console.log("[JIBB][Webex] Recording Error:", err);
 	}
 }
+
+
+async function handleTeamsRecordingFlow(title) {
+	logIfRunning("[JIBB][Teams] flow started");
+
+	// 1) Teams -> get device id
+	const deviceSerialNumber = await getDeviceSerialNumber();
+	if (!deviceSerialNumber) {
+		console.log("[JIBB][Teams] Missing device serial -> abort");
+		return;
+	}
+
+	// 2) Teams -> ensure meeting is ready (meetingId/meetingToken + meetingUrl for sharing)
+	const ok = await ensureMeetingContextReady({ needUrl: true, timeoutMs: 25000 });
+	if (!ok) return;
+
+	// 3) Teams -> share meeting
+	try {
+		await shareTeamsMeetingToChat(deviceSerialNumber);
+		logIfRunning("[JIBB][Teams] meeting/share OK (200)");
+	} catch (err) {
+		console.log("[JIBB][Teams] meeting/share failed:", err?.message || err);
+		return;
+	}
+
+	// 4) Teams -> start recording
+	try {
+		const payload = {
+			sensivityLevel: 2,
+			meetingId: SessionDetails.meetingId,
+			meetingToken: SessionDetails.meetingToken,
+			title,
+			deviceSerialNumber,
+		};
+
+		console.log("[JIBB][Webex][Teams] payload:", payload);
+
+		await Recording.startRecording(payload);
+
+		SessionDetails.isRecordingInProgress = true;
+		logIfRunning("[JIBB][Teams] Recording started");
+	} catch (err) {
+		console.log("[JIBB][Teams] Recording Error:", err);
+	}
+}
+
+
+function logRecordingContext(tag = "") {
+	console.log(`[JIBB][CTX] ${tag}`, {
+		isJibbRunning: SessionDetails.isJibbRunning,
+		provider: SessionDetails.provider,
+		externalMeetingId: SessionDetails.externalMeetingId,
+		meetingId: SessionDetails.meetingId,
+		hasMeetingToken: !!SessionDetails.meetingToken,
+		hasUserToken: !!SessionDetails.userToken,
+		hasMeetingUrl: !!SessionDetails.meetingUrl,
+		isRecordingInProgress: SessionDetails.isRecordingInProgress,
+	});
+}
+
+function isNoMatch(err) {
+	const msg = String(err?.message || err || "");
+	return /No match on Path argument/i.test(msg);
+}
+
+async function hasPath(getter, label = "") {
+	try {
+		await getter();
+		return true;
+	} catch (e) {
+		if (!isNoMatch(e)) {
+			console.log(`[JIBB] hasPath unexpected error (${label}):`, e?.message || e);
+		}
+		return false;
+	}
+}
+
+
+async function startRecording() {
+	if (SessionDetails.isRecordingInProgress || recordingStartInFlight) return;
+	recordingStartInFlight = true;
+
+	try {
+		const title = await createTitle();
+
+		if (!SessionDetails.userToken) {
+			SessionDetails.userToken = await Auth.getUserToken();
+		}
+
+		const state = await getMeetingState();
+		console.log("[JIBB] MeetingState:", state);
+
+		if (state === MEETING_STATE.TEAMS) {
+			await handleTeamsRecordingFlow(title);
+			return;
+		}
+
+		if (state === MEETING_STATE.WEBEX) {
+			const ok = await ensureMeetingContextReady({ needUrl: false, timeoutMs: 25000 });
+			if (!ok) return;
+
+			// Only needed for WEBEX host-email lookup
+			if (!SessionDetails.externalMeetingId) {
+				const ci = await safe(getMeetingProviderAndId, "getMeetingProviderAndId (webex)");
+				if (ci?.meetingIdentifier) SessionDetails.externalMeetingId = ci.meetingIdentifier;
+			}
+
+			await handleWebexRecordingFlow(title);
+			return;
+		}
+
+		// NONE
+		await handleStandaloneRecordingFlow(title);
+
+	} finally {
+		recordingStartInFlight = false;
+	}
+}
+
+
 
 async function stopRecording() {
 	try {
@@ -565,7 +984,7 @@ async function stopRecording() {
 		console.warn("Cannot stop recording");
 	}
 
-	SessionDetails.isRecordingInProgress = false; // <-- only here
+	SessionDetails.isRecordingInProgress = false;
 }
 
 async function setCameraPreset(positionName) {
@@ -626,6 +1045,10 @@ async function setCameraPreset(positionName) {
 	}
 
 	console.warn("No usable preset found on any available camera. Skipping camera position restore.");
+}
+
+async function setCameraPosition(positionName) {
+	return setCameraPreset(positionName);
 }
 
 
@@ -721,44 +1144,37 @@ function closeWebView() {
 	return xapi.Command.UserInterface.WebView.Clear({ Target: "OSD" });
 }
 
-function hideCameraSelfView() {
-	return xapi.Command.Video.Selfview.Set({
-		FullscreenMode: "Off",
-		Mode: "Off",
-		PIPPosition: "LowerRight",
-	});
+async function hideCameraSelfView() {
+	try {
+		return await xapi.Command.Video.Selfview.Set({
+			FullscreenMode: "Off",
+			Mode: "Off",
+			PIPPosition: "LowerRight",
+		});
+	} catch (e) {
+		console.log("[JIBB] Selfview not available:", e?.message || e);
+		return null;
+	}
 }
 
-
-function showCameraSelfView() {
-	xapi.Command.Video.Selfview.Set({
-		FullscreenMode: "Off",
-		Mode: "On",
-		PIPPosition: "LowerRight",
-	})
+async function showCameraSelfView() {
+	try {
+		await xapi.Command.Video.Selfview.Set({
+			FullscreenMode: "Off",
+			Mode: "On",
+			PIPPosition: "LowerRight",
+		});
+	} catch (e) {
+		console.log("[JIBB] Selfview.Set failed:", e?.message || e);
+	}
 }
+
 
 function hideJibbPanel() {
 	return xapi.Command.UserInterface.Extensions.Panel.Close();
 }
 
-// Add the Jibb panel to UI
-async function addPanel() {
-	console.info("Adding panel");
-	const xml = uiExtension;
 
-	await xapi.Command.UserInterface.Extensions.Panel.Save(
-		{ PanelId: "jibb_panel" },
-		xml
-	);
-
-	await sleep(200);
-
-	await xapi.Command.UserInterface.Extensions.Widget.SetValue({
-		WidgetId: "jibb_start_toggle",
-		Value: "start"
-	});
-}
 
 function sleep(ms) {
 	return new Promise((resolve) => setTimeout(resolve, ms))
@@ -771,74 +1187,216 @@ function showAlert() {
 		Title: "JIBB is Ready",
 	})
 }
+function bindWidgetActions() {
+	xapi.Event.UserInterface.Extensions.Widget.Action.on(async (event) => {
+		if (!["changed", "released", "clicked"].includes(event.Type)) return;
+
+		if (event.WidgetId === "jibb_start_toggle") {
+			if (event.Value === "start") {
+				if (SessionDetails.isJibbRunning || SessionDetails.isRecordingInProgress || SessionDetails.meetingId) {
+					await stopMeeting()
+				}
+				SessionDetails.isJibbRunning = true;
+
+				await xapi.Command.UserInterface.Extensions.Widget.SetValue({
+					WidgetId: "jibb_start_toggle",
+					Value: "start"
+				});
+
+				await autoStartMeeting()
+			}
+
+			if (event.Value === "stop") {
+				SessionDetails.isJibbRunning = false;
+
+				await xapi.Command.UserInterface.Extensions.Widget.SetValue({
+					WidgetId: "jibb_start_toggle",
+					Value: "stop"
+				});
+
+				RecordingEmail = "";
+				await stopMeeting();
+			}
+			return;
+		}
+
+	});
+}
 
 let config = new Config(ApiKey)
 
-// Startup!
+async function addPanel() {
+	const xml = uiExtension;
+
+	await xapi.Command.UserInterface.Extensions.Panel.Save({ PanelId: "jibb_panel" }, xml);
+
+	try {
+		await sleep(400);
+		await xapi.Command.UserInterface.Extensions.Widget.SetValue({
+			WidgetId: "jibb_start_toggle",
+			Value: "start",
+		});
+	} catch (e) {
+		console.log("[JIBB] Toggle not ready yet:", e?.message || e);
+	}
+}
+
+async function waitForSystemReady({ timeoutMs = 60000, pollMs = 1000 } = {}) {
+	const start = Date.now();
+	while (Date.now() - start < timeoutMs) {
+		try {
+			const s = await xapi.Status.SystemUnit.State.System.get(); // "Initializing" / "Initialized" / ...
+			if (s === "Initialized") return true;
+			console.log("[JIBB] System state:", s, "(waiting)");
+		} catch (e) {
+			console.log("[JIBB] System state read failed:", e?.message || e);
+		}
+		await sleep(pollMs);
+	}
+	return false;
+}
+
+
+async function detectDeviceModeSimple(retries = 10, delayMs = 1000) {
+	for (let i = 0; i < retries; i++) {
+		const isMtr =
+			await hasPath(() => xapi.Status.MicrosoftTeams.User.SignedIn.get(), "Teams.SignedIn") ||
+			await hasPath(() => xapi.Status.MicrosoftTeams.Software.VersionCode.TeamsApp.get(), "TeamsApp");
+
+		if (isMtr) return DEVICE_MODE.MTR;
+		await sleep(delayMs);
+	}
+	return DEVICE_MODE.WEBEX;
+}
+
+async function waitForWebViewReady(expectedUrl, timeoutMs = 30000) {
+	const start = Date.now();
+	const base = String(expectedUrl || "").split("?")[0];
+
+	while (Date.now() - start < timeoutMs) {
+		const views = await safe(() => xapi.Status.UserInterface.WebView.get(), "Status.UserInterface.WebView.get()");
+		const list = Array.isArray(views) ? views : (views ? [views] : []);
+
+		// try to match your meeting URL, otherwise just take the first integration view
+		const v =
+			list.find(w => String(w?.URL || w?.Url || "").includes(base)) ||
+			list.find(w => w?.Type === "Integration") ||
+			list[0];
+
+		if (v) {
+			const statusOk = v.Status === "Visible";
+			const httpOk = String(v.HttpResponseStatusCode) === "200";
+
+			if (statusOk && httpOk) return true;
+		}
+
+		await sleep(500);
+	}
+
+	console.log("[JIBB] WebView not ready (Visible + 200) before timeout");
+	return false;
+}
+
+async function waitForCallStackReady({ timeoutMs = 60000, pollMs = 1000 } = {}) {
+	const start = Date.now();
+
+	while (Date.now() - start < timeoutMs) {
+		try {
+			// Check Teams stack (MTR)
+			const teamsPath = await hasPath(
+				() => xapi.Status.MicrosoftTeams.Calling.InCall.get(),
+				"Teams.Calling.InCall"
+			);
+
+			// Check Call stack (RoomOS)
+			const calls = await safe(() => xapi.Status.Call.get(), "Status.Call.get()");
+			const callStackReady = Array.isArray(calls);
+
+			if (teamsPath || callStackReady) {
+				console.log("[JIBB] Call stack ready");
+				return true;
+			}
+		} catch { }
+
+		console.log("[JIBB] Waiting for call stack...");
+		await sleep(pollMs);
+	}
+
+	console.log("[JIBB] Call stack NOT ready before timeout");
+	return false;
+}
+
+
 async function main() {
+
+	await waitForSystemReady({ timeoutMs: 120000, pollMs: 1000 });
+
+	await waitForCallStackReady({ timeoutMs: 90000 });
+
+	deviceMode = await detectDeviceModeSimple(15, 1000);
+	console.log("[JIBB] DeviceMode:", deviceMode);
+
+	await addPanel(deviceMode);
+
+	// safe to do these after system is up
+	try {
+		await xapi.Command.WebEngine.MediaAccess.add({
+			Hostname: getHostname(config.webURL),
+			Device: "Camera",
+		});
+	} catch (e) { }
+
+	registerWebexCallHandlers();
+	registerTeamsCallHandlers();
+
+	reactToJibbClick();
+	bindWidgetActions();
+	showAlert();
+
 	#mainBody#
 }
 
-function reactToStartAndStopClick() {
-	xapi.Event.UserInterface.Extensions.Widget.Action.on(async (event) => {
-		if (event.Type == "released") {
-			switch (event.WidgetId) {
-				case `jibb_start_toggle`:
-					if (event.Value == "start") {
-						await stopMeeting();
-						SessionDetails.isJibbRunning = true;
 
-						await xapi.Command.UserInterface.Extensions.Widget.SetValue({
-							WidgetId: "jibb_start_toggle",
-							Value: "start"
-						});
 
-						autoStartMeeting();
+main().catch(e => console.log("[JIBB] main crashed:", e?.message || e));
 
-					} else if (event.Value == "stop") {
-						SessionDetails.isJibbRunning = false;
-
-						await xapi.Command.UserInterface.Extensions.Widget.SetValue({
-							WidgetId: "jibb_start_toggle",
-							Value: "stop"
-						});
-						RecordingEmail = "";
-						stopMeeting();
-					}
-					break;
-				default:
-					break
-			}
-		}
-	})
-}
 
 function reactToJibbClick() {
+
 	xapi.Event.UserInterface.Extensions.Panel.Clicked.on(async (value) => {
-		if (value.PanelId == "jibb_panel") {
-			try {
-				await getDeviceConfig()
-				await checkSystemHealth("#ApiUrl#/health")
-			} catch (err) {
-				xapi.Command.UserInterface.Message.Alert.Display({
-					Duration: 20,
-					Text: "HttpClient, or JIBB API access. Please contact your device admin to check settings.",
-					Title: "Essential device settings are missing",
-				})
-				hideJibbPanel()
-				throw (err)
+		try {
+			if (value.PanelId == "jibb_panel") {
+				try {
+					await getDeviceConfig()
+					await checkSystemHealth("#ApiUrl#/health")
+				} catch (err) {
+					xapi.Command.UserInterface.Message.Alert.Display({
+						Duration: 20,
+						Text: "HttpClient, or JIBB API access. Please contact your device admin to check settings.",
+						Title: "Essential device settings are missing",
+					})
+					hideJibbPanel()
+					throw (err)
+				}
+
+				const state = await getMeetingState();
+				if (state === MEETING_STATE.NONE) {
+					console.log("No active meeting detected when JIBB clicked.");
+				} else {
+					console.log("Active meeting detected. State:", state);
+				}
+
+
+
+				await setCameraPreset(`Jibb${SessionDetails.selectedInput}`).catch(e =>
+					console.log("[JIBB] setCameraPreset failed:", e?.message || e)
+				);
+
+				await showCameraSelfView()
 			}
 
-			const hasMeeting = await getMeetingProviderAndId();
-
-			if (!hasMeeting) {
-				console.log("No active meeting detected when JIBB clicked.");
-			} else {
-				console.log("Active meeting detected. Using existing call info.");
-			}
-
-			setCameraPreset(`Jibb${SessionDetails.selectedInput}`)
-			showCameraSelfView()
+		} catch (e) {
+			console.log("[JIBB] Panel.Clicked handler crashed:", e?.message || e);
 		}
 	})
 }
@@ -849,7 +1407,6 @@ function logIfRunning(...args) {
 		console.log(...args);
 	}
 }
-
 
 function stringReplace(oldStr, newStr) {
 	uiExtension = uiExtension.replace(oldStr, newStr)
@@ -866,40 +1423,27 @@ let uiExtension = `<Extensions>
 	   <Name>JIBB</Name>
 	   <ActivityType>Custom</ActivityType>
     <CustomIcon>
-      <Content>iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAYAAABccqhmAAAkU0lEQVR4nO3deXRU5f0/8PddZp9JMkmAQEAWiYggaFCU4k7tKVAEUY5aFH6HoihC+1PAHu3p+eGh9Yu2Vq14WqVUxdoq9mj7q9a6VKygyCJUFEFZwuIvkH2Syax3+/0xeW4mYSbrTOYmz+d1zhw0meXeyX3e93me+9znEQzDMEAI4ZKY6w0ghOQOBQAhHKMAIIRjFACEcIwCgBCOUQAQwjEKAEI4RgFACMcoAAjhGAUAIRyjACCEYxQAhHCMAoAQjlEAEMIxCgBCOEYBQAjHKAAI4RgFACEcowAghGMUAIRwjAKAEI5RABDCMQoAQjhGAUAIxygACOEYBQAhHKMAIIRjFACEcIwCgBCOUQAQwjEKAEI4RgFACMcoAAjhGAUAIRyjACCEYxQAhHCMAoAQjlEAEMIxCgBCOEYBQAjHKAAI4RgFACEcowAghGMUAIRwjAKAEI5RABDCMQoAQjhGAUAIxygACOEYBQAhHJNzvQGkpwzAaPk38R8thJZ/hLb/35cMo+PfCznYJpKSYBid/bWIZRg6AB2A1PVCZGhIBEQ3XkO4QTWA/sDQE/8KIsxWmxaBEa2DETkDXWkCdBWCKAO2PAj2fAiuoRBkNyBIyW/U8m92g8AIh4F4PH3geDwQZDr0rID+ClZnaGYh1ptPQD35f6Gd+Qh63V4Y0RoYehzQVSRqBiIgyoAgQbDlQfCNhlx0EcSiKZBKr4foOSfL22oAgoDoG29A3bMHgssF6Hrr7wUBUBQ4Fy+GfOGFid+J1A2VSxQAVtZS+PXgUcQ//x8ox/8KI9wIABBkJGoE7AEJiX4BDdBVGOoZGKEziP2/HYAICK48yMO+B+flv4XgLklUBrLVJFBVGNFoonCnCABoWnY+l3QbBYBVtRR+tWILojt+Aj14BoJdguBwtjxBT+r7S+4IFBM1fEECJAGCXUz8KtYE7fT7iRoCBLTtOMwwQUgU/vZnd/Zz6ouwDAoAKzJ0QJAQ/+opRD/53xBEAYLLnajqG52dPZMKtmEk3kuUYWgCbKNvheAc1KZZQfhGAWA1hg4IItRT/0R0x30QZFuiiq8raV4gtD2jmhd1koNAA0RAHjErW1tN+ikKACtp6UQzlCZEd9yb+JkgpT7rs5/r8dYWgICWarbU0kmAxC+0OMT8kZBLrml5LXW8kQQKAEvRAMhQDj0LveF4Sy+6evbTBAFGPApBliC4h0JwDwNEG6CEYESrYMQCMGLRROXA7kxU/8+ZB9h8Zg2DEIACwEKMxFlbV6EcfQmCLLRe/29DANQ47Of/L9jO+xHEwkmJ6/0QAUODoYZhNB2BWrMLWuU7UE+9DRg6bCNvxNmjBgnvKACsoqX6r9Xuhh44CEjS2QEgiDCUGBzlP4Oj/Bdnv4cgJgYBFU+BvXgKMP4e6LV7oJx6E9KgS5GoElDnH2lFAWAZiYE8Wu1uGHEVgrN99V8E1BikwgvguOj/tA4LTlWgDcP8nVh8CRzFl4DO/CQVCgDLSPTkG01HUpdVUYQRA+SRcxPtfV1tuaaf6q0EmEOG2wwjJqQtCgDLSASAHqtLlN3292gZRmKkb/54JPoLuvq2VPBJenR0WEVLQTXigdS/N3QIEiDY/Wi53tdXW0YGMAqAfiPRSQjJ2flTCekiCoB+hzrzSOZQABDCMQoAQjhGAUAIxygACOEYBQAhHKMAIIRjFACEcIwCgBCOUQAQwjEKAEI4RgFACMcoAAjhGAUAIRyjACCEYxQAhHCMAoAQjlEAEMIxCgBCOEYBQAjHKAAI4RgFACEcowAghGMUAIRwjAKAEI5RABDCMQoAQjhGAUAIxygACOEYBQDpewYtcGoVFAAkcwQBMAwYwSAgpjm0BAGw2fp2u0haFACkY7retTO2YSQKfzwOvboagiQlXtv+OZIEwetN/L8gZH57SbfIud4AYnHsTN5SwAGkLri6DkgS1K++gt7QAMFuPzs4dB1wuSAWFqZ/H9KnqAZAztZy5lb370d0yxboVVWJwiqKiYcgnP2QJOjV1Yj94x+pq/+iCKgqpNLSRA2A+gEsgWoA5GwtZ2Zlzx7Et2+H8tlnkM89F9K4cRCHDoVYVATB40k8V1Gg19ZC/eYbKNu2wQgGIdhsKQu4oWmQzz8/8f66TjUAC6AAIG0ZBiAIMJqaoB47BtHvB1QVyv79UP77XwgOB2C3Q5BbDh1dhxGPw4hGE9X+VIVfEABNg5iXB1t5eevPSM5RAJC2WgJAPXQIRiAAweUCdD3xL5A4cysKjHi89TWiCMHtbttPkEwUYYTDsH/vexD8fvMzSO5RAJC2Wgqm+uWXbQtzco8+6w8AWp/TvsefkSQYwSDk8ePhmDGD2v4WQwFA2mqp/msVFYnqfroC21lBbukcNIJBSOecA9fCha3NAzr7WwYFgOUk9ayjfUHJcsHRNECSoOzbB/3MGQj5+a3bwgp8uoJvbjMS/QKxGKDrsE2dCufNN0Pw+ajwWxAFgNXoCqAZgBYDjPYDaXD2zzKppVovDhsG+cILoX37LYxw2LzGL0hS24JublfLICBVBTQNgtMJadQoOK6+GvIll7Q+hwq/5VAAWIzgKoHgGwrB5gagtf2loUGQ3eyZWfjwxHvKZWWQy8qgV1VBPXYM+qlT0KurodfVAZEIDDY60DASHYCiCLjdkAYPhjRiBOTx4yGNHt1a4KnwW5ZgGNQrYylaDIahtVS7z/61IDkAIcvjt9IUWCMeB6JRGJFIormgaYlLgm434HQmrv8n0/X09wQQS6AAIOklX9brakFmA3zojN8vUABYTmd/jhwXrI46AUm/Q30AlmPxgkQFfUChBhohHKMAIIRjFACEcIwCgBCOUQAQwjEKAEI4RgFACMcoAAjhGAUAIRyjACCEYxQAhHCMAoAQjlEAEMIxCgBCOEYBQAjHuJwPoKtzoAi9vPe9K5/T28/o6udkSia2N5P6at+ttt+ZQjMCkW7TdR26rkMQBIgtU4UN1AKSzDAM6C0LoAiCYD76My4DIBwOm3/IdGRZhtPp7PFn6LqOePLyWSkYhgFZlmFrP5lmN8Xj8U73p7ckSYIoipAkKeXvNU1rEwh9QVVVKIqS1ULI9jndfuu6DsMwIIpivwwDbgLAMAwIggBVVXHbbbfh4MGDcLlcZxUcURQRDAYxY8YMPPPMM93+HF3XIYoijh07hqVLl0JV1ZQHhiRJqK+vx9KlS7FixQpompb2IOtofwzDwPLly7F371643e6sBIEgCHC5XHA4HCguLkZxcTGGDRuGMWPGYOLEiRg+fDhkubU12d196S5VVSHLMp5//nk8+eSTKCoqgqZpnb+wmwzDgN1uh9vtRl5eHgYPHoyhQ4di5MiRGD9+PMrKytqcJDRN63dBwGUfQDAYRGNjY8ozJwuAcDjcq8/QNA3ffvstFEWBKIpntVVlWUZtbS0CgUCvPgcAqqurcfLkSXg8nqzVBNiZTtM08+FyueDz+TB69GhMnz4d1157LS677DKz8LMwzJbGxkYcP34ckUgEqqpm5TMMwzCr/qqqQlVVOBwOuN1ulJSU4NJLL8U111yDa6+9Fp6WJdOzHYCZxGUAyLJsPlIFgCzLvf4DCoIAu91uVotTBYDdbm9z5uwpm80Gu90Ou92etQBIPquxtq+u64jFYvjiiy+we/dubNy4EeXl5bjjjjtwww03mPudrTOiLMtwOByw2+1ZDRq2/cn7rWkaTp06hcOHD+PVV1/Feeedh1mzZuHWW29FaWmp+fe2em2Ay8uALNU7ewy0z+nNg3X8sYNfVVXoug5JkuByuVBYWAibzYadO3di+fLluOmmm7B9+3azwGSjpdkX+52878n7zQK+oKAAXq8XFRUVeOyxxzB//nxs3ry5TVhYGZcBQDKHFRBN02AYBjweD/Ly8rBr1y788Ic/xJNPPmm2iwdadxNrEum6DrvdjuLiYtTV1eGBBx7Aj370I1RWVkIURUuHAAUAR5IvXXX10V0sDHw+H9xuNx599FGsXr0aqqpmrMbTXX2x34ZhmJ2TRUVF+Oc//4lFixbh5MmTKZuAVkEBwBFWOJOr8509gLaXwrray8165f1+PzZv3oyHH37YLAh9XRh6ut+CIECSJMiy3OX9ZkFQWFiIQ4cOYcmSJaipqbFsDYjLTkAeCYLQ7Q5H1tsfjUYRi8UgCILZ6SbLcpuBMamwKnJxcTE2bdqEsrIyLFq0yGxD9xWbzdatAsgCIx6PIxaLQdM0c7/Ze3V22VFVVeTn5+PAgQN48MEH8fvf/96Sg6YoAAY4QRAQjUYxadIkPP74412ujhqGgXA4jHA4jNraWlRVVeHIkSM4cOAAjh07hoaGBtjtdrhcrk7P6rquw+Px4NFHH8W0adNQVlaW9UuEbB9kWcbTTz+NUaNGmYOVOhONRhEOh1FfX4/q6mqcOnUKBw8exIEDB1BTUwMA8Hg8nbbvWU3gzTffxObNm7FkyZI+D7/OUAAMcKwn2uPxoKysrNfvp6oqjh8/jn//+9944403cODAgU4vQbIBNYFAAL/+9a/x7LPP9no7OsPO+IIgYOzYsTjnnHN6/Z5VVVX46KOP8O677+LDDz9EJBLpdOwF++6fffZZzJ07F0VFRX0Sfl1lja0gWZfcDu5uezj58pcsyxg7diyWLVuGv/3tb1i/fj38fj/C4XCHYydUVYXX68UHH3yAgwcP9mnveCwWMwfy9GS/WXV/yJAhWLBgATZu3IhXX30VU6dORTAY7LAw67oOh8OBkydP4tVXX+2T/e0OCgCOiKLYo0dyR1jyZT+n04mFCxfitddew9ixYxEKhTosDJIkobm5Gf/4xz8A9O2dfL3ZbxZsrE/DMAyUl5fjT3/6ExYsWNBpCBiGAYfDgbfeeguqqlrm7A9QAJBuYoVJkiSzx3v06NHYtGkTBg8ejHg8nraNy66Xf/zxx/1quCzDrgqwTkCn04nHH38cM2fO7DAEWC3g6NGjOHLkiPkzK6AAID3GriyoqopRo0ZhzZo1HQYAANjtdlRUVKC2thZA385lkEmSJJk3/6xduxbFxcVpb/wCErWvUCiEL774AgAFABlAWG1g3rx5uOCCCxCNRlMWBNYpF41GceLECfNn/RULgdLSUtxwww1obm5OWwsQRRGxWMzcb6ugACC9xq402O12TJ8+HZFIJG31XpIkxGIxVFdXA+jfAcAYhoHrrrsOTqezwyshsiyjqqoKACzT/KEAIBnBCvK4cePMGkE6uq4jGo321aZlFRshOH78eOTl5XXYDBAEAbFYrI+3sGMUACQjWNV30KBBcDgcWZmgw8ry8vLg9Xo7DD42IY2VUACQjHI6nZap3vYlQRBgs9k6DADDMHo1zVw2UACQjIpGox2e/Q3DgM1mg9/v78Otyj7DMMz7JdLRNA1erxcAXQUgAwy7H6CmpgaxWCxlLYB1FjqdTowaNQoALDUopjcaGho6HQgFACNGjABgnc7PgfHtk5xj99F/+eWXHd7woigKhg0bZhaE/o7NdnTgwAEEg8G0HaDs7H/RRRcBsE7wWWMrSL/Gru+HQiF89NFHcLlcKZsBkiQhGo1i6tSp5s1DVrozrqcEQcDWrVsRjUZT1nxEUYSiKCgpKcGECRPM11gBBQDpNXab7ZYtW3D48GE4nc6UZ0FW/Z89ezYA61SDe4rNiXjkyBG89dZb8Hq9KYOPDX6aPXu2OXU7BQAZENg0WBUVFXjqqafSrk0gSRJCoRCmTJmCyy+/HIZh9OurBawQa5qGdevWoa6uLuVVAEEQoCgKBg8ejMWLF+doa9OjACA9wm6ZlWUZJ06cwNKlSxEIBNIWAnYP/Jo1azodKGRl7AYodmfkmjVr8P7778Pn86Vt9gSDQSxevBjDhg2z1FwAAAUAV3o7PTabIgxovbX4/fffx+23347Dhw+nXGkJSBSChoYGrFixApdddlmfF4JMTAvObgNmN0CdOHECd955J1555RXk5+en3G9ZlhEIBHD55Zfj7rvvtlTVn6EZgTjS2znpku+L379/P15++WVs2bIFoiimnBmH3T5bU1ODm2++Gffdd595B11fYsN1e7psV/Jrzpw5g9deew0vvfQSKisrUVBQkPLMzwr/uHHj8PTTT5tTp1EAkJwwDMNcSLM7ByKbSae6uhoVFRX473//i507d2Lfvn1obm6Gz+dLuQCGJElQVRWNjY2444478Mgjj+RsUkxFUczZgLoTPoqioLm5GUePHsWhQ4ewa9cu7NixA1VVVXC5XMjLyzur8LOQqaurw8UXX4xnn30WI0aMsFzVn6EAGODYbDTffPMN5s2b163XiaKIeDyOpqYmNDc3IxKJoLm5GQ6HAy6XC/n5+WbVGGidLETXdTQ1NcHj8WDt2rVYtmyZ+Z59VfjZZ2mahpUrV8LhcHS736GxsdFcJzIUCpmLpBYUFJjNAoYV/HA4DEVRcPPNN2PdunXw+/2WLfwABcCAxwpyKBTCgQMHuv365Om0bDYbiouL28yZx7D/D4fDcLlc+O53v4tVq1bhwgsvNNu+uaj+GoaBI0eO9KjTMXlqsIKCAgA4a79Z30gsFoNhGJg8eTKWLVuGuXPnms+3auEHKAC4IYoiXC5Xt1+XXHBYD3gq7Mx42WWXYe7cubjiiisAWKMAOByOHq/2w/5Nd3+DJEkoLCzEuHHjMG/ePMyePbvNIKdc73tnKAA4ko0bUNgtrueccw5uu+02zJgxAyUlJW1+n+sQyNZqRLquw+v1Yv78+Zg1axYmTpxo/k4URbPD02odf8msHU/E8tiAnq+//hoPP/wwZsyYgVmzZuGxxx7Dvn372iyP3l+v/acjiiKam5uxceNG3HTTTZg+fToeeOABvPPOO+awYKuvEEwBQDKCneni8Ti++uorPPHEE7jllluwaNEi/Oc//+k3y2X3BAu406dP46WXXsJdd92FOXPm4IUXXkA8HjdrA1ZEAcCRnqySm2qO/I6qtZIkweVywe/3QxAEfPDBB1i8eDFWrVqF2tranCyX3ZP9Tt53WZbNfU/XmSkIAux2O/x+P9xuNw4fPoyHHnoICxYswGeffQZJkiwZftQHwAld16EoSrdfx0bCsdezAsEWymTDetnB3b6qn5eXB13X8fLLL+Pzzz/HM888g3HjxvXpugCsh7672CVO9r213+/2i4Qmdxa6XC54PB7s3bsXCxcuxNq1a3HrrbfmvD+kPQqAAY5NRFlWVob77ruv2wOBVFVFNBpFPB5HXV0dampqcPr0aXzzzTc4ffo0GhoaYLPZ4PF4AJzd0cgKRFFREQ4fPoxbbrkFL774IiZPnpz1wsDWJFy7di0KCwu7NRTXMAyEQiFomoZAIICqqipUV1fj8OHD+Pbbb9HY2AjDMOD1es3pwZOx0PT5fFBVFffffz8CgYA5JNgqIUABMMCxXvri4mLMnDkzY+8bjUbx9ddfY8eOHXj33XexZ88eAEh7S6yqqvB4PGhoaMDy5cvxyiuvZHWEHOtvkCQJP/jBD+Dz+TLyvvF4HKdOncKuXbvw/vvvY/v27QgEAsjLywNw9i3OrKaTl5eHX/ziFygpKcG8efMsEwK53wKSdSwE2EKX7N/uPthwWiAx+efkyZNx9913469//Suee+45XHrppWhqakrbTmaz4lRUVOCnP/2pOaYg21cHmpqaer3frDlgt9tx7rnn4rbbbsOmTZvwl7/8BfPnzzfnQkxVqFnNw+l04uc//zm+/vpry3SIUgBwgt2Y05sHWyAUaO0bYAf997//fbzyyiv4yU9+glAolLZQq6oKv9+PDz/8EJs3bzZ70LMpE/vN2vzt7w4sLy/Hhg0b8MQTT8Bms5m9/u2x9QHr6+vx6KOP5mxkZHsUAKRHkhcJBRJnd5vNhjVr1uCBBx5AOBzucJFQl8uF5557DvX19Tm5MtBTyfvNzuKapuHGG2/Ehg0bYLPZzBmS2lNVFXl5edi6dSs++eSTszoRc4ECgGQEuxrAbr6ZM2cOmpubU/b0s7PhqVOn8O677wLov9ODsTBQFAXXXXcd1qxZ0+HswGysxEsvvWS+PpcoAEjGsGqtYRhYvXo1CgoKOrz0KAgC3nnnHQDok6ZANsmyDF3XsWjRIlx88cVpQ0DXdbjdbnz66ac4c+aM+X3lCgUAySh20I8ZMwZXX301QqFQ2lqA0+nE/v37UVdXZ4n2cG+wgmyz2XDjjTemXSadLRJaW1uLHTt2AEBOmwEUACTjWAfZFVdckbZgs4IQCATw5Zdfmj/rz9i+Tp8+HX6/P+2dk2yeBbbfuQw/CgCScWyo8Lhx4+D1ejssCOFwGMeOHQNgneWyeooV5FGjRqGwsDDtSsFsKfUTJ04AyO1S4RQAJOPYQc9WCk438pD1gtfW1vb1JmaV3W7HkCFD0l4NABLhV1tba1b/c1X74TIAuvJl9/fqqBWwYbLpvkt2K3FzczOA3PeI9xYr7OkmSWXYfjc0NPTo/oxM6t/feA+oqmr20KY6MNkf0eFwAKAg6I3k+QI7kutCkGkdzSBkNdwFQCwWQzAY7PBso+s68vPzAVAA9EYwGEzbDmbYpKXsv/sztv1sUtR0bXt2xcDpdOZ8dSTLBkDykMtMqq+vT3uJBmhtlyZPAkm6h62Ye+LECYTD4bTNgPbfdX8PAKaxsRGnT5+GLMtp94ndKUgBkCR59Zn2Q017ixXkyspKRKPRDgeeiKLYZl470n2CIGDv3r0Ih8Npa1tsLMCwYcPM1/RnLPjY2IaOAkBVVZSUlJjHYa72PecBkHyWT75hhV0nff311zNSC2B/iKNHj5pnpVQ0TYPT6URpaSmA/t8x1dfYNOThcBhvvvlm2uXCgNYAGDNmDID+HwBAYh9ef/11xGKxtMcOmyJs9OjRAHI7ECjn8wEkf0mVlZXYvXs39u7di08//RQVFRVQFAWTJ0/GmDFjzIOrN5/z+eefp30Ou7nD7XYPqIOyL6mqCpvNhj//+c84dOhQ2nXzRFFELBZDaWkpxo8fD6B/f9fsvv/9+/fj7bffTrtYKHuuy+XCJZdcAiC3+53TADAMAx9//DF27dqF3bt34+DBg2Yb3eVywel0IhQK4cMPP8S5557b4/Y4q2I1NTVh165dHZ6VVFVFaWkphg8f3ptd4xIr/Dt27MBvfvMbeL3eDptZ0WgU3/nOd8wlxftrbYsV/traWtx///1QVTXtSkRsFGBpaSnKy8vNn+VKTgNA13WsX78e27ZtQ0FBAex2OzweD7xer1lAZVnGG2+8gUWLFpmdSd1NTDYzzDvvvINjx46Z89S1xw7KSZMmdTiAhbTF+mxkWcaePXuwcuVKRCIROJ3ODqv/drvdnKWoP3YAsja/JEk4c+YMfvzjH+PQoUPw+Xxp95stHzZr1izzebkMgJx9MkvNq666Cj6fD3l5eebMqez6sa7r5sSKzz//fI+mV2aFOB6P44UXXoDNZuvw+YIgYNq0aeY2krO1v0LDZgresmULFi1ahLq6ug4LPxv8M2XKFFx55ZVmIbK65GXSWXNUkiTs2rULCxcuxMcff5z25AK0nZ5twYIFfbz1qeW8D+D666/Hc889B0VRUp4F2Oorv/rVr3D++efjqquugqqq5oQMHWEHqiRJ+O1vf4vPP/88bToLggBFUTBkyBBcc801AAZWByA7cLs7KSh7LdC6Vl772Wy2bduGTZs24YMPPoDD4eiw8AOJv6ksy1i9erUZ+tmsabErSz2p0bHXJB9vLKwOHTqEF1980ez0Y4ulpsNG/91///0oKyvL+dkfyGEAsOr8RRddhCuvvBLvvfdeyuWWWdIqioJ7770XGzZswNVXXw0g0eZMNUc9O/jYFYWNGzfi6aefbtO0aE8URTQ1NWHmzJkoKSmxxB8nU9idd7KcmT93JBLB8ePH8cknn+C9997D7t27EYvF4PP52kwRngq7FXbFihWYNm1an3zPrHbZW/F4HNXV1fjkk0+wdetWbN++HXV1dfD5fHC5XJ0W/ubmZkyePBkrVqywTPMy530AkiThrrvuwtatWzscM2632xEOh7Fs2TKsXLkSixcvhtfrTfl89seurq7GM888gz/+8Y9wu92dbovH48HSpUt7t1MWk3z/+dtvv93tGkAkEkEwGERtbS1qampQWVmJiooK1NTUIBAIQJZleDweOByOTptMsiyjoaEBV1xxBVatWpXVM3/y8uBvvvlml6cFb78semNjI6qqqlBZWYmTJ0+isrISDQ0NZs20oKAAmqZ1GHrsiofL5cL69evN+wSscILJaQCw6t+0adNw/fXX46233jK/0PZYp5GmaXjkkUfw+uuvY86cObj00ksxcuRIc/aZQCCAo0eP4rPPPsPf//53HD9+PO2UzQw7MOfPn49JkyZZ5o+TCSw8KyoqcM8993T79bqumzMKswkybTYbZFmG3+/v8ohN9h2ff/75eOqpp+B2u7N+FmTNuoceeqjbnYxsJeTkxVDYfvt8vjbzAXZEkiTEYjHYbDb87ne/Q3l5eZ8uitKZnPcBAIkv+2c/+xl2796N5ubmtCOoWMHMz8/HsWPHsH79eni9XrjdbthsNnP1mnA4jHA4DI/HkzZQGHaQ5OXl4Z577umXvdFdIYoinE5nt1+XvFQW6wRj31FXOklZkNbX12Pq1KnYsGEDhg8f3qchy+416I72+w20Ni27cjma9RsEg0H4fD5s2LAB1157raUKP2CBkYBsKOSoUaOwbt06RCIRAOkHR7DOLIfDgcLCQkiShEgkgsbGRgSDQcRiMdjtdhQWFpoztHb2+c3NzVi9ejUmTJjQq8FGVpdcgLv6YGc5Njc+u/TVWVCyAhCNRhEMBnH77bfj5ZdfzupiIOlkYr9ZJ2JX91vTNNTX12Py5MnYsmWLJQs/YJEaAJsWes6cOTh58iQeeeQRs5rVUb9A8mWodL/rCGsb33LLLVi6dGnWe6MHOnb/BpDoO4hGo7jggguwatUqzJo1CwAGVPMqGeuMVhQFTU1NKCoqwt13343ly5ebA8+sVvgBiwQA0BoC9957LwzDwC9/+Ut4vd4uncW7W21nB2BtbS3mz5+Pxx57zCz8FABdl1xNBhL39bPJPcrKyszlwVl7HxgYl1aTJ/4AEk2hSCSCeDyO4uJi3HTTTViyZAnOO+88ANYOPcsEANAaAitWrEBxcTHWrVuHpqYms7e/t7fmsupZJBKBoihYuXIlHnzwwR6PMOwMu26e6s7D5GvqmfycbGHb2X51HEVREIvFIEkS/H4/pk+fjrlz52LmzJlmn0O2qr7JS3hne9/Z/rNmkKZpiEaj5tWACRMmYNasWZg9ezZGjRoFoHVJMKsWfsBiAQC0hsCtt96KCy64AOvWrcOnn34KQRDgdrvNwtTV9hh7TyBxHbexsREjR47EQw89hBtuuMF8n0wXfl3XEQqFzF7k9tsqyzJCoRDi8XivPysSiSAUCpmfm2nt28WSJMHlcsHtdmPs2LGYOHEiysvLMW3aNPPgB2AuG5atqq+iKAiFQgiFQmknHu2t5FvUAcDtdsPpdGLQoEGYMGECpkyZgssvvxwTJ04095P9Daxc8BnLBQDQervkpEmT8Nprr+Ff//oX/vCHP2Dfvn0Ih8Ow2Wyw2+3m6Kz2X3T7AzYajQIAhg4diiVLluDOO+/EoEGDslLtZ+/l9Xoxbdo0KIqS8v0lSUIgEDALTG+24cILLwSQWLAz01cx2Iw9LpcL+fn5GDx4MIYMGYIRI0Zg7NixKCkpaTO8mn3v2Sz47LsaPnw4rrzySvj9/qwN22ZXkgoLCzF48GCMGDECY8aMwfDhw80l0RkWeP2h4DOCYeHrXu3bTjt37sS2bduwc+dOHD16FKFQCLFYDIqitDnzSZIEu90Oh8MBv9+Piy++GNOnT8f111+PQYMGAchetbS9rtZSsv05vdHZNrIrA5lq0nRHtg/fzqYzY4W+v/YfWToAmPaF1TAM1NXV4dSpU6iqqkIgEDDP8oZhwOv1oqioCKWlpSgtLW0zYpA6+3qm/WWy5JrXQP8uWa2G7Xf7zs/+rF8EAJN8+2V3JFdLrXKG6slNOZ19TqbXmcv0NmZDNvabsfJ+Z0q/CgCGbXJyR2DybiT3WA+UpCYkG/plABBCMqP/dFcSQjKOAoAQjlEAEMIxCgBCOEYBQAjHKAAI4RgFACEcowAghGMUAIRwjAKAEI5RABDCMQoAQjhGAUAIxygACOEYBQAhHKMAIIRjFACEcIwCgBCOUQAQwjEKAEI4RgFACMcoAAjhGAUAIRyjACCEYxQAhHCMAoAQjlEAEMIxCgBCOEYBQAjHKAAI4RgFACEcowAghGMUAIRwjAKAEI5RABDCMQoAQjhGAUAIxygACOEYBQAhHKMAIIRjFACEcIwCgBCOUQAQwjEKAEI4RgFACMcoAAjhGAUAIRyjACCEYxQAhHCMAoAQjv1/4jvivL8xQAoAAAAASUVORK5CYII=</Content>
-      <Id>d5c72d04a0311f930447729e1331908693ed5d5494d6e1003149ddb0a4a5ed95</Id>
-    </CustomIcon>
+		<Content>
+		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
+		</Content>
+		<Id>923c419c5ca7abb5bd70a34f9752d287a8bd649e764633ed43c66237ef81f110</Id>
+	</CustomIcon>
     <Page>
       <Name>JIBB</Name>
 	  <Row>
         <Name>Row</Name>
         <Widget>
           <WidgetId>widget_3</WidgetId>
-          <Name>Instantly Digitize &amp; Share the Meeting Room Whiteboard</Name>
+           <Name>JIBB makes handwriting collaborative, digitized, shareable</Name>
           <Type>Text</Type>
           <Options>size=4;fontSize=normal;align=center</Options>
         </Widget>       
       </Row>
-	  <Row>
-		<Widget>
-			<WidgetId>widget_4</WidgetId>
-			<Name>1- Enter email for auto-save PDF (else host receives it)</Name>
-			<Type>Text</Type>
-			<Options>size=3;fontSize=small;align=left</Options>
-		</Widget>
-
-		<Widget>
-			<WidgetId>jibb_email</WidgetId>
-			<Name>Edit</Name>
-			<Type>Button</Type>
-			<Options>size=1</Options>
-		</Widget>
-	</Row>
     <Row>
         <Name>Row</Name>
         <Widget>
           <WidgetId>widget_5</WidgetId>
-          <Name>2- Tap Start when you're ready to Launch JIBB Session</Name>
+          <Name>Tap Start when you're ready to Launch JIBB Session</Name>
           <Type>Text</Type>
           <Options>size=4;fontSize=small;align=left</Options>
         </Widget>
@@ -932,5 +1476,3 @@ let uiExtension = `<Extensions>
 #EmailCode#
 
 #CameraControlCode#
-
-main()
