@@ -1,4 +1,1 @@
-addPanel()
-showAlert()
-reactToJibbClick()
-reactToStartAndStopClick()
+// injected by get_artifacts.js

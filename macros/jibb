@@ -7,6 +7,28 @@ let MeetingAPI = JIBB.Meeting
 let Auth = JIBB.Auth
 let EventBus = JIBB.EventBus
 let Recording = JIBB.Recording
+let ShareMeetingStatus = JIBB.ShareMeetingStatus
+
+let recordingStartInFlight = false;
+
+const MEETING_STATE = {
+  NONE: "NONE",
+  TEAMS: "TEAMS",
+  WEBEX: "WEBEX",
+};
+
+const DEVICE_MODE = {
+  WEBEX: "webex",
+  MTR: "mtr",
+};
+
+let deviceMode = DEVICE_MODE.WEBEX;
+
+const MEETING_PROVIDER = {
+  WEBEX: "webex",
+  TEAMS: "microsoft",
+  UNKNOWN: "unknown",
+};
 
 const SurfaceType = {
 	PAPER: "PAPER",
@@ -19,13 +41,12 @@ function getHostname(url) {
 }
 
 function Config(apiKey) {
-
-	this.apiKey = apiKey
-	this.webURL = "#WebAppUrl#"
-	xapi.Command.WebEngine.MediaAccess.add({ Hostname: getHostname(this.webURL), Device: "Camera" })
-	JIBB.Config.setApiBaseURL("#ApiUrl#")
-	JIBB.Auth.configure({ apiKey: apiKey })
+  this.apiKey = apiKey
+  this.webURL = "#WebAppUrl#"
+  JIBB.Config.setApiBaseURL("#ApiUrl#")
+  JIBB.Auth.configure({ apiKey })
 }
+
 
 let SessionDetails = {
 	meetingId: "",
@@ -51,73 +72,208 @@ let CurrentDeviceCameraSettings = {
 	Zoom: 0,
 }
 
+function asBool(v) {
+  return v === true || v === "True" || v === "true" || v === 1 || v === "1";
+}
 
-xapi.Event.CallDisconnect.on(async () => {
+async function getTeamsInCall() {
+  const v = await safe(() => xapi.Status.MicrosoftTeams.Calling.InCall.get(), "Teams.Calling.InCall");
+  return asBool(v);
+}
 
-	const wasRunning = SessionDetails.isJibbRunning;
+async function getMeetingState() {
+  // Always check Teams first (safe even on non-MTR: it will return null/false)
+  const inTeamsCall = await getTeamsInCall();
+  if (inTeamsCall) return MEETING_STATE.TEAMS;
 
-	SessionDetails.externalMeetingId = null;
-	SessionDetails.provider = null;
+  // Then check RoomOS call stack
+  const calls = await safe(() => xapi.Status.Call.get(), "Status.Call.get()");
+  if (!Array.isArray(calls) || calls.length === 0) {
+    return MEETING_STATE.NONE;
+  }
 
-	if (!wasRunning) return;
+  const call = calls[0];
+  const provider = detectMeetingProviderFromCall(call);
 
-	logIfRunning("Call disconnected > stopping JIBB...");
+  if (provider === MEETING_PROVIDER.TEAMS) return MEETING_STATE.TEAMS;
+  if (provider === MEETING_PROVIDER.WEBEX) return MEETING_STATE.WEBEX;
 
-	try {
-		await stopMeeting();
+  // If unknown provider but call exists, you can decide your default:
+  return MEETING_STATE.WEBEX;
+}
+
+
+
+async function handleStandaloneRecordingFlow(title) {
+  logIfRunning("[JIBB][NONE] standalone flow started");
+
+  const ok = await ensureMeetingContextReady({ needUrl: false, timeoutMs: 25000 });
+  if (!ok) return;
+
+  try {
+    const payload = {
+      sensivityLevel: 2,
+      meetingId: SessionDetails.meetingId,
+      meetingToken: SessionDetails.meetingToken,
+      title,
+      // no alternativeEmail, no deviceSerialNumber
+    };
+
+    console.log("[JIBB][NONE][Rec] payload:", payload);
+		
+    await Recording.startRecording(payload);
+    SessionDetails.isRecordingInProgress = true;
+    logIfRunning("[JIBB][NONE] Recording started");
+  } catch (err) {
+    console.log("[JIBB][NONE] Recording Error:", err);
+  }
+}
+
+
+async function waitUntil(predicate, timeoutMs = 20000, intervalMs = 250) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      if (await predicate()) return true;
+    } catch {}
+    await sleep(intervalMs);
+  }
+  return false;
+}
+
+async function ensureMeetingContextReady({ needUrl = false, timeoutMs = 25000 } = {}) {
+  // Wait for meetingId (autoStartMeeting sets it early)
+  const hasMeetingId = await waitUntil(() => !!SessionDetails.meetingId, timeoutMs, 250);
+  if (!hasMeetingId) {
+    console.log("[JIBB] Meeting context not ready: missing meetingId");
+    return false;
+  }
+
+  // If meetingToken isn't ready yet, try to fetch it here (race-safe)
+  if (!SessionDetails.meetingToken) {
+    try {
+      await gettingMeetingToken();
+    } catch (e) {
+      console.log("[JIBB] gettingMeetingToken failed (will keep waiting):", e?.message || e);
+    }
+  }
+
+  const hasMeetingToken = await waitUntil(() => !!SessionDetails.meetingToken, timeoutMs, 250);
+  if (!hasMeetingToken) {
+    console.log("[JIBB] Meeting context not ready: missing meetingToken");
+    return false;
+  }
+
+  if (needUrl) {
+    const hasUrl = await waitUntil(() => !!SessionDetails.meetingUrl, timeoutMs, 250);
+    if (!hasUrl) {
+      console.log("[JIBB] Meeting context not ready: missing meetingUrl (Teams share needs it)");
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function registerTeamsCallHandlers() {
+  // fires when Teams call starts/ends (works in MTR mode)
+  try {
+    xapi.Status.MicrosoftTeams.Calling.InCall.on(async (v) => {
+      deviceMode = DEVICE_MODE.MTR; // ✅ Teams stack exists => this is MTR
+
+      const inCall = asBool(v);
+      console.log("[JIBB][Teams] InCall changed:", inCall);
+
+      if (inCall) {
+        if (!SessionDetails.isJibbRunning) return;
+
+        // meeting connected → start Teams flow (share+record)
+        SessionDetails.provider = MEETING_PROVIDER.TEAMS;
+        startRecording().catch(e => console.log("[JIBB] startRecording failed:", e?.message || e));
+        return;
+      }
+
+      // call ended → stop everything
+      if (SessionDetails.isJibbRunning) {
+        await stopMeeting();
+
+        // update UI toggle
+        try {
+          await xapi.Command.UserInterface.Extensions.Widget.SetValue({
+            WidgetId: "jibb_start_toggle",
+            Value: "stop",
+          });
+        } catch {}
+      }
+    });
+  } catch (e) {
+    console.log("[JIBB][Teams] InCall path not available; skipping Teams handlers:", e?.message || e);
+  }
+}
+
+
+function registerWebexCallHandlers() {
+	xapi.Event.CallDisconnect.on(async () => {
+
+		const wasRunning = SessionDetails.isJibbRunning;
+
+		SessionDetails.externalMeetingId = null;
+		SessionDetails.provider = null;
+		
+
+		if (!wasRunning) return;
+
+		logIfRunning("Call disconnected > stopping JIBB...");
 
 		try {
-			await xapi.Command.UserInterface.Extensions.Widget.SetValue({
-				WidgetId: "jibb_start_toggle",
-				Value: "stop"
-			});
-		} catch (uiErr) {
-			console.warn("Failed to update toggle UI:", uiErr.message);
+			await stopMeeting();
+
+
+			try {
+				await xapi.Command.UserInterface.Extensions.Widget.SetValue({
+					WidgetId: "jibb_start_toggle",
+					Value: "stop"
+				});
+			} catch (uiErr) {
+				console.warn("Failed to update toggle UI:", uiErr.message);
+			}
+
+			SessionDetails.isJibbRunning = false;
+
+		} catch (err) {
+			console.warn("Error stopping JIBB after meeting ended:", err.message);
 		}
-
-		SessionDetails.isJibbRunning = false;
-
-	} catch (err) {
-		console.warn("Error stopping JIBB after meeting ended:", err.message);
-	}
-});
+	});
 
 xapi.Event.CallSuccessful.on(async () => {
+  if (!SessionDetails.isJibbRunning) return;
+  logIfRunning("New meeting connected.");
 
-	if (!SessionDetails.isJibbRunning) return;
-	logIfRunning("New meeting connected.");
+  if (SessionDetails.isRecordingInProgress) {
+    logIfRunning("Recording is already in progress > nothing to do.");
+    return;
+  }
 
-	if (SessionDetails.isRecordingInProgress) {
-		logIfRunning("Recording is already in progress > nothing to do.");
-		return;
-	}
+  const calls = await xapi.Status.Call.get();
+  const call = calls?.[0];
+  if (!call) return;
 
-	const calls = await xapi.Status.Call.get();
-	const call = calls?.[0];
-	if (!call) return;
+  // still useful for WEBEX host-email flow
+  SessionDetails.provider = detectMeetingProviderFromCall(call);
+  SessionDetails.externalMeetingId = await extractExternalMeetingId(call);
 
-	const idObj = await extractExternalMeetingId(call);
-	const provider = await detectMeetingProvider();
+  logIfRunning("Provider:", SessionDetails.provider);
+  logIfRunning("Meeting Identifier:", SessionDetails.externalMeetingId);
 
-	SessionDetails.externalMeetingId = idObj;
-	SessionDetails.provider = provider;
+  logIfRunning("CallSuccessful > startRecording...");
+  logRecordingContext("CallSuccessful before startRecording");
 
-	logIfRunning("Meeting Identifier:", idObj);
-	logIfRunning("Provider:", provider);
-
-	SessionDetails.userToken = await Auth.getUserToken();
-
-	if (!idObj || (!idObj.meetingNumber && !idObj.webLink)) {
-		console.log("No valid meetingNumber or webLink > cannot auto-start recording.");
-		return;
-	}
-
-	logIfRunning("Auto-detected meeting > starting recording...");
-
-	startRecording();
+  startRecording().catch(e =>
+    console.log("[JIBB] startRecording failed:", e?.message || e)
+  );
 });
 
-
+}
 
 async function safe(fn, label = "") {
 	try {
@@ -142,26 +298,20 @@ function convertSipToWebLink(sip) {
 	return `https://${domain}/meet/${username}`;
 }
 
+function detectMeetingProviderFromCall(call) {
+  const name = call.DisplayName || "";
+  const cb = call.CallbackNumber || "";
+  const proto = call.Protocol || "";
 
+  if (/teams\.microsoft\.com/i.test(cb)) return MEETING_PROVIDER.TEAMS;
+  if (/Teams Meeting/i.test(name)) return MEETING_PROVIDER.TEAMS;
+  if (/WebRTC/i.test(proto) && /teams/i.test(cb)) return MEETING_PROVIDER.TEAMS;
 
-async function detectMeetingProvider() {
-	const calls = await xapi.Status.Call.get();
-	if (!calls || calls.length === 0) return null;
+  if (/\.webex\.com/i.test(cb)) return MEETING_PROVIDER.WEBEX;
+  if (/spark:/i.test(cb)) return MEETING_PROVIDER.WEBEX;
+  if (/Spark/i.test(proto)) return MEETING_PROVIDER.WEBEX;
 
-	const call = calls[0];
-	const name = call.DisplayName || "";
-	const cb = call.CallbackNumber || "";
-	const proto = call.Protocol || "";
-
-	if (/teams\.microsoft\.com/i.test(cb)) return "microsoft";
-	if (/Teams Meeting/i.test(name)) return "microsoft";
-	if (/WebRTC/i.test(proto) && /teams/i.test(cb)) return "microsoft";
-
-	if (/\.webex\.com/i.test(cb)) return "webex";
-	if (/spark:/i.test(cb)) return "webex";
-	if (/Spark/i.test(proto)) return "webex";
-
-	return "unknown";
+  return MEETING_PROVIDER.UNKNOWN;
 }
 
 
@@ -262,14 +412,133 @@ async function getJibbOrganizationId() {
 }
 
 async function getMeetingProviderAndId() {
-	const calls = await xapi.Status.Call.get();
-	if (!calls || calls.length === 0) return null;
+  const calls = await xapi.Status.Call.get();
+  console.log("[JIBB][DBG] Status.Call.get():", JSON.stringify(calls || [], null, 2));
 
-	const call = calls[0];
-	const provider = await detectMeetingProvider();
-	const idObj = await extractExternalMeetingId(call);
+  if (!calls || calls.length === 0) return null;
 
-	return { provider, meetingIdentifier: idObj };
+  const call = calls[0];
+  const provider = detectMeetingProviderFromCall(call);
+  const idObj = await extractExternalMeetingId(call);
+
+  return { provider, meetingIdentifier: idObj };
+}
+
+
+async function getDeviceSerialNumber() {
+  // Best practical identifier on RoomOS (serial)
+  try {
+    const sn = await xapi.Status.SystemUnit.Hardware.Module.SerialNumber.get();
+    const v = String(sn || "").trim();
+    if (!v) {
+      console.log("[JIBB][Teams] device serial is empty");
+      return null;
+    }
+    return v;
+  } catch (e) {
+    console.log("[JIBB][Teams] failed to get SerialNumber:", e?.message || e);
+    return null;
+  }
+}
+
+async function shareTeamsMeetingToChat(deviceSerialNumber) {
+  const orgId = await getJibbOrganizationId();
+  if (!orgId) throw new Error("Missing organizationId");
+
+  if (!deviceSerialNumber) throw new Error("Missing device_serial_number");
+  if (!SessionDetails.meetingId) throw new Error("Missing meetingId");
+
+  const shareId = await MeetingAPI.createTemporaryShare({
+    meetingId: SessionDetails.meetingId,
+    permission: 13,
+  });
+  if (!shareId) throw new Error("can not create Share Id");
+
+  const meetingUrl = `${config.webURL}/workspace/${SessionDetails.meetingId}/${shareId}`;
+  if (!meetingUrl) throw new Error("Missing meeting_url");
+
+  const url = `#ApiUrl#/v1/microsoft-integration/${orgId}/meeting/share`;
+
+  const payloadStr = JSON.stringify({
+    meeting_url: meetingUrl,
+    device_serial_number: deviceSerialNumber,
+  });
+
+  console.log("[JIBB][Teams] POST", url);
+  console.log("[JIBB][Teams] Body JSON:", payloadStr);
+
+  const notify = async (text, durationSeconds = 15) => {
+    try {
+      await xapi.Command.Audio.Sound.Play({ Sound: "Announcement" });
+    } catch (soundErr) {
+      console.log("[JIBB][Teams] Audio.Sound.Play failed/unsupported:", soundErr?.message || soundErr);
+    }
+
+    try {
+      await xapi.Command.UserInterface.Message.Alert.Display({
+        Title: "JIBB",
+        Text: text,
+        Duration: durationSeconds,
+      });
+    } catch (uiErr) {
+      console.log("[JIBB][Teams] Alert.Display failed:", uiErr?.message || uiErr);
+    }
+  };
+
+  const res = await xapi.Command.HttpClient.Post(
+    {
+      Url: url,
+      Header: [
+        "Content-Type: application/json",
+        `x-jibb-user-jwt: ${SessionDetails.userToken}`,
+      ],
+      ResultBody: "PlainText",
+    },
+    payloadStr
+  );
+
+  console.log("[JIBB][Teams] Response:", res);
+
+  if (String(res?.StatusCode) !== "200") {
+    throw new Error(`meeting/share failed. StatusCode=${res?.StatusCode}`);
+  }
+
+  let bodyJson = null;
+  try {
+    bodyJson = res?.Body ? JSON.parse(res.Body) : null;
+  } catch (parseErr) {
+    console.log("[JIBB][Teams] Response body is not JSON:", parseErr?.message || parseErr);
+  }
+
+  const status = bodyJson?.status ?? bodyJson?.Status;
+
+  switch (JIBB.normalizeShareMeetingStatus(status)) {
+    case ShareMeetingStatus.PENDING_BOT:
+      await notify(
+        "Add JIBB to this meeting: in Microsoft Teams on your (phone/laptop), click Apps in the meeting toolbar (or More (…) → Apps), search JIBB, then click Add.",
+        60
+      );
+      return false;
+
+    case ShareMeetingStatus.CURRENT_MEETING_NOT_FOUND:
+    case 3:
+      await notify(
+        "This meeting isn’t scheduled, so the JIBB app can’t share the JIBB meeting in the chat box",
+        15
+      );
+      return false;
+
+    case ShareMeetingStatus.MICROSOFT_TEAM_NOT_CONNECTED:
+    case 4:
+      await notify(
+        "Something went wrong, so JIBB app can’t share the JIBB meeting in the chat box",
+        15
+      );
+      return false;
+
+    default:
+      return true;
+  }
 }
 
 
@@ -367,7 +636,6 @@ async function autoStartMeeting() {
 	hideCameraSelfView()
 	await generateMeetingLink()
 	await openMeetingUrlInWebView()
-	await sleep(10000)
 
 	try {
 		await getWebClinetId()
@@ -390,9 +658,11 @@ async function autoStartMeeting() {
 	await startTheMeeting()
 	await sleep(5000)
 
-	startRecording()
-}
+	startRecording().catch(e =>
+		console.log("[JIBB] startRecording failed:", e?.message || e)
+	);
 
+}
 
 
 async function startTheMeeting() {
@@ -443,21 +713,51 @@ async function getCameraId() {
 }
 
 async function getWebClinetId() {
-	let statusList = await EventBus.getClientStatusList()
-	console.log("Full statusList from getClientStatusList():", statusList)
+  const maxAttempts = 60;      // ✅ up to ~60s
+  const retryDelayMs = 1000;
 
-	if (Array.isArray(statusList) && statusList.length > 0 && statusList[0]?.id) {
-		SessionDetails.clientId = statusList[0].id
-	} else {
-		console.error("No valid client ID found in status list")
-		throw new Error("Unable to get a valid client ID")
-	}
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    console.log(`[getWebClinetId] attempt ${attempt}/${maxAttempts}`);
+
+    const statusList = await EventBus.getClientStatusList();
+    console.log("Full statusList from getClientStatusList():", statusList);
+
+    // normalize possible shapes
+    const items = Array.isArray(statusList) ? statusList : (statusList ? [statusList] : []);
+
+    // ✅ prefer WEBAPP client if present
+    const webapp = items.find(c =>
+      (c?.clientType === "WEBAPP" || c?.type === "WEBAPP") && c?.id
+    );
+
+    if (webapp?.id) {
+      SessionDetails.clientId = webapp.id;
+      return;
+    }
+
+    // fallback: any id
+    const any = items.find(c => c?.id);
+    if (any?.id) {
+      SessionDetails.clientId = any.id;
+      return;
+    }
+
+    await sleep(retryDelayMs);
+  }
+
+  console.error("No valid client ID found in status list after retries");
+  throw new Error("Unable to get a valid client ID");
 }
+
 
 
 async function openMeetingUrlInWebView() {
-	await xapi.Command.UserInterface.WebView.Display({ Title: "jibb", Url: SessionDetails.meetingUrl })
+  await xapi.Command.UserInterface.WebView.Display({ Title: "jibb", Url: SessionDetails.meetingUrl });
+
+  // ✅ IMPORTANT: wait until WebView is actually loaded, otherwise client list can stay empty
+  await waitForWebViewReady(SessionDetails.meetingUrl, 30000);
 }
+
 
 async function stopMeeting() {
 	logIfRunning("stopMeeting...");
@@ -498,65 +798,184 @@ async function stopMeeting() {
 	}
 	SessionDetails.isRecordingInProgress = false;
 	SessionDetails.isJibbRunning = false;
+
+	SessionDetails.meetingId = "";
+	SessionDetails.meetingToken = "";
+	SessionDetails.meetingUrl = "";
+	SessionDetails.cameraId = "";
+	SessionDetails.clientId = "";
+	SessionDetails.externalMeetingId = null;
+	SessionDetails.provider = null;
+
+	logRecordingContext("stopMeeting completed");
 }
 
-async function startRecording() {
-	if (SessionDetails.isRecordingInProgress) {
-		logIfRunning("Recording already in progress > skip startRecording");
-		return;
-	}
-
-
-	logIfRunning("startRecording ... ");
-
-	const title = await createTitle();
-
-	const callInfo = await getMeetingProviderAndId() || {};
-	if (callInfo.meetingIdentifier) {
-		SessionDetails.externalMeetingId = callInfo.meetingIdentifier;
-		SessionDetails.provider = callInfo.provider;
-	}
+async function handleWebexRecordingFlow(title) {
+  logIfRunning("[JIBB][Webex] recording flow started");
 
 	let recordingTargetEmail = RecordingEmail;
-
-	if (!recordingTargetEmail) {
-		logIfRunning("No RecordingEmail provided. Attempting Host Email lookup...");
+	if (recordingTargetEmail) {
+		logIfRunning("[JIBB][Webex] Using RecordingEmail:", recordingTargetEmail);
+	} else {
+		logIfRunning("[JIBB][Webex] -> Host Email lookup...");
 
 		const idObj = SessionDetails.externalMeetingId;
-
 		if (!idObj || (!idObj.meetingNumber && !idObj.webLink)) {
-			logIfRunning("No valid meetingNumber or webLink > cannot fetch host email.");
+			logIfRunning("[JIBB][Webex] No meetingNumber/webLink -> abort");
 			return;
 		}
 
 		const orgId = await getJibbOrganizationId();
 		const hostEmail = await getHostEmail(orgId, idObj);
 
-		if (hostEmail) {
-			logIfRunning("Using Host Email: " + hostEmail);
-			recordingTargetEmail = hostEmail;
-		} else {
-			logIfRunning("Host email not found > cannot start recording.");
+		if (!hostEmail) {
+			logIfRunning("[JIBB][Webex] Host email not found -> abort");
 			return;
 		}
-	}
-	logIfRunning("This eamil will get pdf: ", recordingTargetEmail);
 
-	try {
-		await Recording.startRecording({
-			alternativeEmail: recordingTargetEmail,
+		logIfRunning("[JIBB][Webex] Using host email:", hostEmail);
+		recordingTargetEmail = hostEmail;
+	}
+
+  try {
+    const payload = {
 			sensivityLevel: 2,
 			meetingId: SessionDetails.meetingId,
 			meetingToken: SessionDetails.meetingToken,
-			title: title
-		});
+			title,
+			alternativeEmail: recordingTargetEmail
+		};
 
-		SessionDetails.isRecordingInProgress = true;
+	 console.log("[JIBB][Webex][Rec] payload:", payload);
 
-	} catch (err) {
-		console.log("Recording Error:", err);
-	}
+		await Recording.startRecording(payload);
+
+    SessionDetails.isRecordingInProgress = true;
+    logIfRunning("[JIBB][Webex] Recording started");
+  } catch (err) {
+    console.log("[JIBB][Webex] Recording Error:", err);
+  }
 }
+
+
+async function handleTeamsRecordingFlow(title) {
+  logIfRunning("[JIBB][Teams] flow started");
+
+  // 1) Teams -> get device id
+  const deviceSerialNumber = await getDeviceSerialNumber();
+  if (!deviceSerialNumber) {
+    console.log("[JIBB][Teams] Missing device serial -> abort");
+    return;
+  }
+
+  // 2) Teams -> ensure meeting is ready (meetingId/meetingToken + meetingUrl for sharing)
+  const ok = await ensureMeetingContextReady({ needUrl: true, timeoutMs: 25000 });
+  if (!ok) return;
+
+  // 3) Teams -> share meeting
+  try {
+    await shareTeamsMeetingToChat(deviceSerialNumber);
+    logIfRunning("[JIBB][Teams] meeting/share OK (200)");
+  } catch (err) {
+    console.log("[JIBB][Teams] meeting/share failed:", err?.message || err);
+    return;
+  }
+
+  // 4) Teams -> start recording
+  try {
+    const payload = {
+      sensivityLevel: 2,
+      meetingId: SessionDetails.meetingId,
+      meetingToken: SessionDetails.meetingToken,
+      title,
+      deviceSerialNumber,
+    };
+
+    console.log("[JIBB][Webex][Teams] payload:", payload);
+
+    await Recording.startRecording(payload);
+
+    SessionDetails.isRecordingInProgress = true;
+    logIfRunning("[JIBB][Teams] Recording started");
+  } catch (err) {
+    console.log("[JIBB][Teams] Recording Error:", err);
+  }
+}
+
+
+function logRecordingContext(tag = "") {
+  console.log(`[JIBB][CTX] ${tag}`, {
+    isJibbRunning: SessionDetails.isJibbRunning,
+    provider: SessionDetails.provider,
+    externalMeetingId: SessionDetails.externalMeetingId,
+    meetingId: SessionDetails.meetingId,
+    hasMeetingToken: !!SessionDetails.meetingToken,
+    hasUserToken: !!SessionDetails.userToken,
+    hasMeetingUrl: !!SessionDetails.meetingUrl,
+    isRecordingInProgress: SessionDetails.isRecordingInProgress,
+  });
+}
+
+function isNoMatch(err) {
+  const msg = String(err?.message || err || "");
+  return /No match on Path argument/i.test(msg);
+}
+
+async function hasPath(getter, label = "") {
+  try {
+    await getter();
+    return true;
+  } catch (e) {
+    if (!isNoMatch(e)) {
+      console.log(`[JIBB] hasPath unexpected error (${label}):`, e?.message || e);
+    }
+    return false;
+  }
+}
+
+
+async function startRecording() {
+  if (SessionDetails.isRecordingInProgress || recordingStartInFlight) return;
+  recordingStartInFlight = true;
+
+  try {
+    const title = await createTitle();
+
+    if (!SessionDetails.userToken) {
+      SessionDetails.userToken = await Auth.getUserToken();
+    }
+
+    const state = await getMeetingState();
+    console.log("[JIBB] MeetingState:", state);
+
+    if (state === MEETING_STATE.TEAMS) {
+      await handleTeamsRecordingFlow(title);
+      return;
+    }
+
+    if (state === MEETING_STATE.WEBEX) {
+      const ok = await ensureMeetingContextReady({ needUrl: false, timeoutMs: 25000 });
+      if (!ok) return;
+
+      // Only needed for WEBEX host-email lookup
+      if (!SessionDetails.externalMeetingId) {
+        const ci = await safe(getMeetingProviderAndId, "getMeetingProviderAndId (webex)");
+        if (ci?.meetingIdentifier) SessionDetails.externalMeetingId = ci.meetingIdentifier;
+      }
+
+      await handleWebexRecordingFlow(title);
+      return;
+    }
+
+    // NONE
+    await handleStandaloneRecordingFlow(title);
+
+  } finally {
+    recordingStartInFlight = false;
+  }
+}
+
+
 
 async function stopRecording() {
 	try {
@@ -565,7 +984,7 @@ async function stopRecording() {
 		console.warn("Cannot stop recording");
 	}
 
-	SessionDetails.isRecordingInProgress = false; // <-- only here
+	SessionDetails.isRecordingInProgress = false;
 }
 
 async function setCameraPreset(positionName) {
@@ -626,6 +1045,10 @@ async function setCameraPreset(positionName) {
 	}
 
 	console.warn("No usable preset found on any available camera. Skipping camera position restore.");
+}
+
+async function setCameraPosition(positionName) {
+	return setCameraPreset(positionName);
 }
 
 
@@ -721,44 +1144,37 @@ function closeWebView() {
 	return xapi.Command.UserInterface.WebView.Clear({ Target: "OSD" });
 }
 
-function hideCameraSelfView() {
-	return xapi.Command.Video.Selfview.Set({
-		FullscreenMode: "Off",
-		Mode: "Off",
-		PIPPosition: "LowerRight",
-	});
+async function hideCameraSelfView() {
+  try {
+    return await xapi.Command.Video.Selfview.Set({
+      FullscreenMode: "Off",
+      Mode: "Off",
+      PIPPosition: "LowerRight",
+    });
+  } catch (e) {
+    console.log("[JIBB] Selfview not available:", e?.message || e);
+    return null;
+  }
 }
 
-
-function showCameraSelfView() {
-	xapi.Command.Video.Selfview.Set({
-		FullscreenMode: "Off",
-		Mode: "On",
-		PIPPosition: "LowerRight",
-	})
+async function showCameraSelfView() {
+  try {
+    await xapi.Command.Video.Selfview.Set({
+      FullscreenMode: "Off",
+      Mode: "On",
+      PIPPosition: "LowerRight",
+    });
+  } catch (e) {
+    console.log("[JIBB] Selfview.Set failed:", e?.message || e);
+  }
 }
+
 
 function hideJibbPanel() {
 	return xapi.Command.UserInterface.Extensions.Panel.Close();
 }
 
-// Add the Jibb panel to UI
-async function addPanel() {
-	console.info("Adding panel");
-	const xml = uiExtension;
 
-	await xapi.Command.UserInterface.Extensions.Panel.Save(
-		{ PanelId: "jibb_panel" },
-		xml
-	);
-
-	await sleep(200);
-
-	await xapi.Command.UserInterface.Extensions.Widget.SetValue({
-		WidgetId: "jibb_start_toggle",
-		Value: "start"
-	});
-}
 
 function sleep(ms) {
 	return new Promise((resolve) => setTimeout(resolve, ms))
@@ -771,50 +1187,184 @@ function showAlert() {
 		Title: "JIBB is Ready",
 	})
 }
+function bindWidgetActions() {
+  xapi.Event.UserInterface.Extensions.Widget.Action.on(async (event) => {
+    if (!["changed", "released", "clicked"].includes(event.Type)) return;
+
+    if (event.WidgetId === "jibb_start_toggle") {
+      if (event.Value === "start") {
+        if (SessionDetails.isJibbRunning || SessionDetails.isRecordingInProgress || SessionDetails.meetingId) {
+					await stopMeeting()
+				}
+        SessionDetails.isJibbRunning = true;
+
+        await xapi.Command.UserInterface.Extensions.Widget.SetValue({
+          WidgetId: "jibb_start_toggle",
+          Value: "start"
+        });
+
+       await autoStartMeeting()
+      }
+
+      if (event.Value === "stop") {
+        SessionDetails.isJibbRunning = false;
+
+        await xapi.Command.UserInterface.Extensions.Widget.SetValue({
+          WidgetId: "jibb_start_toggle",
+          Value: "stop"
+        });
+
+       RecordingEmail = "";
+       await stopMeeting();
+      }
+      return;
+    }
+
+  });
+}
 
 let config = new Config(ApiKey)
 
-// Startup!
+async function addPanel() {
+  const xml = uiExtension;
+
+  await xapi.Command.UserInterface.Extensions.Panel.Save({ PanelId: "jibb_panel" }, xml);
+
+  try {
+    await sleep(400); 
+    await xapi.Command.UserInterface.Extensions.Widget.SetValue({
+      WidgetId: "jibb_start_toggle",
+      Value: "start",
+    });
+  } catch (e) {
+    console.log("[JIBB] Toggle not ready yet:", e?.message || e);
+  }
+}
+
+async function waitForSystemReady({ timeoutMs = 60000, pollMs = 1000 } = {}) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const s = await xapi.Status.SystemUnit.State.System.get(); // "Initializing" / "Initialized" / ...
+      if (s === "Initialized") return true;
+      console.log("[JIBB] System state:", s, "(waiting)");
+    } catch (e) {
+      console.log("[JIBB] System state read failed:", e?.message || e);
+    }
+    await sleep(pollMs);
+  }
+  return false;
+}
+
+
+async function detectDeviceModeSimple(retries = 10, delayMs = 1000) {
+  for (let i = 0; i < retries; i++) {
+    const isMtr =
+      await hasPath(() => xapi.Status.MicrosoftTeams.User.SignedIn.get(), "Teams.SignedIn") ||
+      await hasPath(() => xapi.Status.MicrosoftTeams.Software.VersionCode.TeamsApp.get(), "TeamsApp");
+
+    if (isMtr) return DEVICE_MODE.MTR;
+    await sleep(delayMs);
+  }
+  return DEVICE_MODE.WEBEX;
+}
+
+async function waitForWebViewReady(expectedUrl, timeoutMs = 30000) {
+  const start = Date.now();
+  const base = String(expectedUrl || "").split("?")[0];
+
+  while (Date.now() - start < timeoutMs) {
+    const views = await safe(() => xapi.Status.UserInterface.WebView.get(), "Status.UserInterface.WebView.get()");
+    const list = Array.isArray(views) ? views : (views ? [views] : []);
+
+    // try to match your meeting URL, otherwise just take the first integration view
+    const v =
+      list.find(w => String(w?.URL || w?.Url || "").includes(base)) ||
+      list.find(w => w?.Type === "Integration") ||
+      list[0];
+
+    if (v) {
+      const statusOk = v.Status === "Visible";
+      const httpOk = String(v.HttpResponseStatusCode) === "200";
+
+      if (statusOk && httpOk) return true;
+    }
+
+    await sleep(500);
+  }
+
+  console.log("[JIBB] WebView not ready (Visible + 200) before timeout");
+  return false;
+}
+
+async function waitForCallStackReady({ timeoutMs = 60000, pollMs = 1000 } = {}) {
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    try {
+      // Check Teams stack (MTR)
+      const teamsPath = await hasPath(
+        () => xapi.Status.MicrosoftTeams.Calling.InCall.get(),
+        "Teams.Calling.InCall"
+      );
+
+      // Check Call stack (RoomOS)
+      const calls = await safe(() => xapi.Status.Call.get(), "Status.Call.get()");
+      const callStackReady = Array.isArray(calls);
+
+      if (teamsPath || callStackReady) {
+        console.log("[JIBB] Call stack ready");
+        return true;
+      }
+    } catch {}
+
+    console.log("[JIBB] Waiting for call stack...");
+    await sleep(pollMs);
+  }
+
+  console.log("[JIBB] Call stack NOT ready before timeout");
+  return false;
+}
+
+
 async function main() {
-	#mainBody#
+
+await waitForSystemReady({ timeoutMs: 120000, pollMs: 1000 });
+
+await waitForCallStackReady({ timeoutMs: 90000 });
+
+deviceMode = await detectDeviceModeSimple(15, 1000);
+console.log("[JIBB] DeviceMode:", deviceMode);
+
+  await addPanel(deviceMode);
+
+  // safe to do these after system is up
+  try {
+    await xapi.Command.WebEngine.MediaAccess.add({
+      Hostname: getHostname(config.webURL),
+      Device: "Camera",
+    });
+  } catch (e) {}
+
+  registerWebexCallHandlers();
+	registerTeamsCallHandlers();
+
+  reactToJibbClick();
+  bindWidgetActions();
+  showAlert();
+
+#mainBody#
 }
 
-function reactToStartAndStopClick() {
-	xapi.Event.UserInterface.Extensions.Widget.Action.on(async (event) => {
-		if (event.Type == "released") {
-			switch (event.WidgetId) {
-				case `jibb_start_toggle`:
-					if (event.Value == "start") {
-						await stopMeeting();
-						SessionDetails.isJibbRunning = true;
 
-						await xapi.Command.UserInterface.Extensions.Widget.SetValue({
-							WidgetId: "jibb_start_toggle",
-							Value: "start"
-						});
 
-						autoStartMeeting();
+main().catch(e => console.log("[JIBB] main crashed:", e?.message || e));
 
-					} else if (event.Value == "stop") {
-						SessionDetails.isJibbRunning = false;
-
-						await xapi.Command.UserInterface.Extensions.Widget.SetValue({
-							WidgetId: "jibb_start_toggle",
-							Value: "stop"
-						});
-						RecordingEmail = "";
-						stopMeeting();
-					}
-					break;
-				default:
-					break
-			}
-		}
-	})
-}
 
 function reactToJibbClick() {
+ 	 
 	xapi.Event.UserInterface.Extensions.Panel.Clicked.on(async (value) => {
+		try{
 		if (value.PanelId == "jibb_panel") {
 			try {
 				await getDeviceConfig()
@@ -829,17 +1379,25 @@ function reactToJibbClick() {
 				throw (err)
 			}
 
-			const hasMeeting = await getMeetingProviderAndId();
+			const state = await getMeetingState();
+				if (state === MEETING_STATE.NONE) {
+					console.log("No active meeting detected when JIBB clicked.");
+				} else {
+					console.log("Active meeting detected. State:", state);
+				}
 
-			if (!hasMeeting) {
-				console.log("No active meeting detected when JIBB clicked.");
-			} else {
-				console.log("Active meeting detected. Using existing call info.");
-			}
+		
 
-			setCameraPreset(`Jibb${SessionDetails.selectedInput}`)
-			showCameraSelfView()
+			await setCameraPreset(`Jibb${SessionDetails.selectedInput}`).catch(e =>
+				console.log("[JIBB] setCameraPreset failed:", e?.message || e)
+			);
+
+			await showCameraSelfView()
 		}
+		
+		} catch (e) {
+    console.log("[JIBB] Panel.Clicked handler crashed:", e?.message || e);
+  }
 	})
 }
 
@@ -849,7 +1407,6 @@ function logIfRunning(...args) {
 		console.log(...args);
 	}
 }
-
 
 function stringReplace(oldStr, newStr) {
 	uiExtension = uiExtension.replace(oldStr, newStr)
@@ -932,5 +1489,3 @@ let uiExtension = `<Extensions>
 #EmailCode#
 
 #CameraControlCode#
-
-main()
