@@ -1,7 +1,7 @@
 	<Row>
 	  <Name>Row</Name>
 	  <Widget>
-		<WidgetId>jibbcameracontrol</WidgetId>
+		<WidgetId>jibb_camera_control</WidgetId>
 		<Type>DirectionalPad</Type>
 		<Options>size=4</Options>
 	  </Widget>
@@ -9,12 +9,12 @@
 	<Row>
 	  <Name>Row</Name>
 	  <Widget>
-		<WidgetId>jibbzoomout</WidgetId>
+		<WidgetId>jibb_zoom_out</WidgetId>
 		<Type>Button</Type>
 		<Options>size=1;icon=zoom_out</Options>
 	  </Widget>
 	  <Widget>
-		<WidgetId>jibbzoomin</WidgetId>
+		<WidgetId>jibb_zoom_in</WidgetId>
 		<Type>Button</Type>
 		<Options>size=1;icon=zoom_in</Options>
 	  </Widget>

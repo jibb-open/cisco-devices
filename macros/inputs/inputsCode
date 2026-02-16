@@ -11,7 +11,7 @@ function reactToCameraInput() {
 		if (event.Type == "released") {
 			console.log(event.Type)
 			switch (event.WidgetId) {
-				case `jibbcamerainput`:
+				case `jibb_camera_input`:
 					if (event.Value == "1") {
 						switchInput(1)
 					} else if (event.Value == "2") {

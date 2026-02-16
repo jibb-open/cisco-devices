@@ -1,7 +1,7 @@
  <Row>
         <Name>Row</Name>
         <Widget>
-          <WidgetId>widget2</WidgetId>
+          <WidgetId>widget_2</WidgetId>
           <Name>Current Recording Email: ${RecordingEmail}</Name>
           <Type>Text</Type>
           <Options>size=4;fontSize=normal;align=center</Options>
@@ -10,7 +10,7 @@
       <Row>
         <Name>Row</Name>
         <Widget>
-          <WidgetId>jibbemail</WidgetId>
+          <WidgetId>jibb_email</WidgetId>
           <Name>Edit Email</Name>
           <Type>Button</Type>
           <Options>size=4</Options>

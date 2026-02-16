@@ -1,9 +1,9 @@
 function reactToEmailEdit() {
   xapi.Event.UserInterface.Extensions.Widget.Action.on((event) => {
-    if (event.Type === "released" && event.WidgetId === "jibbemail") {
+    if (event.Type === "released" && event.WidgetId === "jibb_email") {
 
       xapi.Command.UserInterface.Message.TextInput.Display({
-        FeedbackId: "useremail",
+        FeedbackId: "user_email",
         Title: "Set your Auto-Save Email",
         Text: "JIBB will send your PDF automatically. If empty, the meeting host will receive it.",
         Placeholder: RecordingEmail || "Enter email address",
@@ -15,7 +15,7 @@ function reactToEmailEdit() {
 
 function setEmailistener() {
   xapi.Event.UserInterface.Message.TextInput.Response.on(async (event) => {
-    if (event.FeedbackId === "useremail") {
+    if (event.FeedbackId === "user_email") {
       RecordingEmail = event.Text.trim();
     }
   });

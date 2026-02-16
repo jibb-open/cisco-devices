@@ -2,13 +2,13 @@ function reactToCameraControl() {
 	xapi.Event.UserInterface.Extensions.Widget.Action.on((event) => {
 		if (event.Type == "released") {
 			switch (event.WidgetId) {
-				case `jibbzoomin`:
+				case `jibb_zoom_in`:
 					zoomIn()
 					break
-				case `jibbzoomout`:
+				case `jibb_zoom_out`:
 					zoomOut()
 					break
-				case `jibbcameracontrol`:
+				case `jibb_camera_control`:
 					switch (event.Value) {
 						case `up`:
 							moveUp()
