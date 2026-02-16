@@ -1,7 +1,7 @@
  <Row>
 <Name>Row</Name>
 <Widget>
-  <WidgetId>widget_1</WidgetId>
+  <WidgetId>widget1</WidgetId>
   <Name>Selected Input:${SessionDetails.selectedInput}</Name>
   <Type>Text</Type>
   <Options>size=4;fontSize=normal;align=center</Options>
@@ -10,7 +10,7 @@
 <Row>
 <Name>Row</Name>
 <Widget>
-  <WidgetId>jibb_camera_input</WidgetId>
+  <WidgetId>jibbcamerainput</WidgetId>
   <Type>GroupButton</Type>
   <Options>size=4</Options>
   <ValueSpace>
