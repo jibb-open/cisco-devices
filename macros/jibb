@@ -515,7 +515,7 @@ async function shareTeamsMeetingToChat(deviceSerialNumber) {
 	switch (JIBB.normalizeShareMeetingStatus(status)) {
 		case ShareMeetingStatus.PENDING_BOT:
 			await notify(
-				"Add JIBB to this meeting: in Microsoft Teams on your (phone/laptop), click Apps in the meeting toolbar (or More (…) Apps), search JIBB, then click Add.",
+				"Add JIBB to this meeting: in Microsoft Teams on your (phone/laptop), click Apps in the meeting toolbar (or More (...) Apps), search JIBB, then click Add.",
 				60
 			);
 			return false;
