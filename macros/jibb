@@ -179,7 +179,7 @@ function registerTeamsCallHandlers() {
   // fires when Teams call starts/ends (works in MTR mode)
   try {
     xapi.Status.MicrosoftTeams.Calling.InCall.on(async (v) => {
-      deviceMode = DEVICE_MODE.MTR; // ✅ Teams stack exists => this is MTR
+      deviceMode = DEVICE_MODE.MTR; // Teams stack exists => this is MTR
 
       const inCall = asBool(v);
       console.log("[JIBB][Teams] InCall changed:", inCall);
@@ -713,7 +713,7 @@ async function getCameraId() {
 }
 
 async function getWebClinetId() {
-  const maxAttempts = 60;      // ✅ up to ~60s
+  const maxAttempts = 60;      // up to ~60s
   const retryDelayMs = 1000;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -725,7 +725,7 @@ async function getWebClinetId() {
     // normalize possible shapes
     const items = Array.isArray(statusList) ? statusList : (statusList ? [statusList] : []);
 
-    // ✅ prefer WEBAPP client if present
+    //  prefer WEBAPP client if present
     const webapp = items.find(c =>
       (c?.clientType === "WEBAPP" || c?.type === "WEBAPP") && c?.id
     );
@@ -754,7 +754,7 @@ async function getWebClinetId() {
 async function openMeetingUrlInWebView() {
   await xapi.Command.UserInterface.WebView.Display({ Title: "jibb", Url: SessionDetails.meetingUrl });
 
-  // ✅ IMPORTANT: wait until WebView is actually loaded, otherwise client list can stay empty
+  //  IMPORTANT: wait until WebView is actually loaded, otherwise client list can stay empty
   await waitForWebViewReady(SessionDetails.meetingUrl, 30000);
 }
 
