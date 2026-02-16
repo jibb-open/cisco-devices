@@ -1434,7 +1434,7 @@ let uiExtension = `<Extensions>
         <Name>Row</Name>
         <Widget>
           <WidgetId>widget_3</WidgetId>
-          <Name>Instantly Digitize &amp; Share the Meeting Room Whiteboard</Name>
+           <Name>JIBB makes handwriting collaborative, digitized, shareable</Name>
           <Type>Text</Type>
           <Options>size=4;fontSize=normal;align=center</Options>
         </Widget>       
@@ -1443,7 +1443,7 @@ let uiExtension = `<Extensions>
         <Name>Row</Name>
         <Widget>
           <WidgetId>widget_5</WidgetId>
-          <Name>2- Tap Start when you're ready to Launch JIBB Session</Name>
+          <Name>Tap Start when you're ready to Launch JIBB Session</Name>
           <Type>Text</Type>
           <Options>size=4;fontSize=small;align=left</Options>
         </Widget>
