@@ -1228,7 +1228,23 @@ let config = new Config(ApiKey)
 async function addPanel() {
 	const xml = uiExtension;
 
-	await xapi.Command.UserInterface.Extensions.Panel.Save({ PanelId: "jibb_panel" }, xml);
+	let saved = false;
+
+	for (let i = 1; i <= 10; i++) {
+		try {
+			try {
+				await xapi.Command.UserInterface.Extensions.Panel.Remove({ PanelId: "jibb_panel" });
+			} catch (_) { }
+
+			await xapi.Command.UserInterface.Extensions.Panel.Save({ PanelId: "jibb_panel" }, xml);
+			saved = true;
+			break;
+		} catch (e) {
+			await sleep(Math.min(1500 * i, 8000));
+		}
+	}
+
+	if (!saved) return;
 
 	try {
 		await sleep(400);
