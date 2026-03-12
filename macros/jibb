@@ -1197,23 +1197,27 @@ function bindWidgetActions() {
 					await stopMeeting()
 				}
 				SessionDetails.isJibbRunning = true;
-
-				await xapi.Command.UserInterface.Extensions.Widget.SetValue({
-					WidgetId: "jibb_start_toggle",
-					Value: "start"
-				});
-
+				try {
+					await xapi.Command.UserInterface.Extensions.Widget.SetValue({
+						WidgetId: "jibb_start_toggle",
+						Value: "start"
+					});
+				} catch (e) {
+					console.log("[JIBB] Failed to set toggle=start:", e?.message || e);
+				}
 				await autoStartMeeting()
 			}
 
 			if (event.Value === "stop") {
 				SessionDetails.isJibbRunning = false;
-
-				await xapi.Command.UserInterface.Extensions.Widget.SetValue({
-					WidgetId: "jibb_start_toggle",
-					Value: "stop"
-				});
-
+				try {
+					await xapi.Command.UserInterface.Extensions.Widget.SetValue({
+						WidgetId: "jibb_start_toggle",
+						Value: "stop"
+					});
+				} catch (e) {
+					console.log("[JIBB] Failed to set toggle=stop:", e?.message || e);
+				}
 				RecordingEmail = "";
 				await stopMeeting();
 			}
@@ -1226,37 +1230,31 @@ function bindWidgetActions() {
 let config = new Config(ApiKey)
 
 async function addPanel() {
-  const xml = uiExtension;
+	const xml = uiExtension;
+	let lastErr = null;
 
-  for (let i = 1; i <= 5; i++) {
-    try {
-      console.log(`[JIBB] Panel.Save attempt ${i}, xml length=${xml.length}`);
+	await sleep(8000);
 
-      await xapi.Command.UserInterface.Extensions.Panel.Save(
-        { PanelId: "jibb_panel" },
-        xml
-      );
+	for (let i = 1; i <= 3; i++) {
+		try {
+			console.log(`[JIBB] Panel.Save attempt ${i}, xml length=${xml.length}`);
 
-      console.log("[JIBB] Panel.Save success");
+			await xapi.Command.UserInterface.Extensions.Panel.Save(
+				{ PanelId: "jibb_panel" },
+				xml
+			);
 
-      try {
-        await sleep(1500);
-        await xapi.Command.UserInterface.Extensions.Widget.SetValue({
-          WidgetId: "jibb_start_toggle",
-          Value: "start",
-        });
-      } catch (e) {
-        console.log("[JIBB] Toggle not ready yet:", e?.message || e);
-      }
+			console.log("[JIBB] Panel.Save success");
+			return true;
+		} catch (e) {
+			lastErr = e;
+			console.log("[JIBB] Panel.Save failed:", e?.message || e);
+			await sleep(2000 * i);
+		}
+	}
 
-      return true;
-    } catch (e) {
-      console.log("[JIBB] Panel.Save failed:", e?.message || e);
-      await sleep(1500 * i);
-    }
-  }
-
-  return false;
+	console.log("[JIBB] Panel save failed after retries:", lastErr?.message || lastErr);
+	return false;
 }
 
 async function waitForSystemReady({ timeoutMs = 60000, pollMs = 1000 } = {}) {
@@ -1346,17 +1344,17 @@ async function waitForCallStackReady({ timeoutMs = 60000, pollMs = 1000 } = {}) 
 
 
 async function main() {
-
 	await waitForSystemReady({ timeoutMs: 120000, pollMs: 1000 });
-
 	await waitForCallStackReady({ timeoutMs: 90000 });
 
 	deviceMode = await detectDeviceModeSimple(15, 1000);
 	console.log("[JIBB] DeviceMode:", deviceMode);
 
-	await addPanel(deviceMode);
+	const panelSaved = await addPanel();
+	if (!panelSaved) {
+		console.log("[JIBB] Panel could not be saved after retries");
+	}
 
-	// safe to do these after system is up
 	try {
 		await xapi.Command.WebEngine.MediaAccess.add({
 			Hostname: getHostname(config.webURL),
@@ -1366,7 +1364,6 @@ async function main() {
 
 	registerWebexCallHandlers();
 	registerTeamsCallHandlers();
-
 	reactToJibbClick();
 	bindWidgetActions();
 	showAlert();
