@@ -1226,35 +1226,37 @@ function bindWidgetActions() {
 let config = new Config(ApiKey)
 
 async function addPanel() {
-	const xml = uiExtension;
+  const xml = uiExtension;
 
-	let saved = false;
+  for (let i = 1; i <= 5; i++) {
+    try {
+      console.log(`[JIBB] Panel.Save attempt ${i}, xml length=${xml.length}`);
 
-	for (let i = 1; i <= 10; i++) {
-		try {
-			try {
-				await xapi.Command.UserInterface.Extensions.Panel.Remove({ PanelId: "jibb_panel" });
-			} catch (_) { }
+      await xapi.Command.UserInterface.Extensions.Panel.Save(
+        { PanelId: "jibb_panel" },
+        xml
+      );
 
-			await xapi.Command.UserInterface.Extensions.Panel.Save({ PanelId: "jibb_panel" }, xml);
-			saved = true;
-			break;
-		} catch (e) {
-			await sleep(Math.min(1500 * i, 8000));
-		}
-	}
+      console.log("[JIBB] Panel.Save success");
 
-	if (!saved) return;
+      try {
+        await sleep(1500);
+        await xapi.Command.UserInterface.Extensions.Widget.SetValue({
+          WidgetId: "jibb_start_toggle",
+          Value: "start",
+        });
+      } catch (e) {
+        console.log("[JIBB] Toggle not ready yet:", e?.message || e);
+      }
 
-	try {
-		await sleep(400);
-		await xapi.Command.UserInterface.Extensions.Widget.SetValue({
-			WidgetId: "jibb_start_toggle",
-			Value: "start",
-		});
-	} catch (e) {
-		console.log("[JIBB] Toggle not ready yet:", e?.message || e);
-	}
+      return true;
+    } catch (e) {
+      console.log("[JIBB] Panel.Save failed:", e?.message || e);
+      await sleep(1500 * i);
+    }
+  }
+
+  return false;
 }
 
 async function waitForSystemReady({ timeoutMs = 60000, pollMs = 1000 } = {}) {
