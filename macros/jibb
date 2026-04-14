@@ -10,6 +10,7 @@ let Recording = JIBB.Recording
 let ShareMeetingStatus = JIBB.ShareMeetingStatus
 
 let recordingStartInFlight = false;
+const TEAMS_INCALL_CACHE_TTL_MS = 3000;
 
 const MEETING_STATE = {
 	NONE: "NONE",
@@ -23,6 +24,8 @@ const DEVICE_MODE = {
 };
 
 let deviceMode = DEVICE_MODE.WEBEX;
+let lastTeamsInCall = false;
+let lastTeamsInCallAt = 0;
 
 const MEETING_PROVIDER = {
 	WEBEX: "webex",
@@ -73,12 +76,40 @@ let CurrentDeviceCameraSettings = {
 }
 
 function asBool(v) {
-	return v === true || v === "True" || v === "true" || v === 1 || v === "1";
+	if (v === true || v === 1) return true;
+	const normalized = String(v ?? "").trim().toLowerCase();
+	return normalized === "true" || normalized === "1" || normalized === "on" || normalized === "active" || normalized === "yes";
+}
+
+function rememberTeamsInCall(raw) {
+	if (raw === null || typeof raw === "undefined") return;
+	lastTeamsInCall = asBool(raw);
+	lastTeamsInCallAt = Date.now();
+}
+
+function hasRecentTeamsInCall() {
+	if (!lastTeamsInCallAt || !lastTeamsInCall) return false;
+	return (Date.now() - lastTeamsInCallAt) <= TEAMS_INCALL_CACHE_TTL_MS;
 }
 
 async function getTeamsInCall() {
-	const v = await safe(() => xapi.Status.MicrosoftTeams.Calling.InCall.get(), "Teams.Calling.InCall");
-	return asBool(v);
+	try {
+		const raw = await xapi.Status.MicrosoftTeams.Calling.InCall.get();
+		const inCall = asBool(raw);
+		rememberTeamsInCall(raw);
+		console.log("[JIBB][Teams] InCall read:", {
+			raw,
+			parsed: inCall,
+			recentCachedTrue: hasRecentTeamsInCall(),
+			deviceMode,
+		});
+		return inCall;
+	} catch (e) {
+		if (!isNoMatch(e)) {
+			console.log("[JIBB][Teams] InCall read failed:", e?.message || e);
+		}
+		return false;
+	}
 }
 
 async function getMeetingState() {
@@ -89,6 +120,10 @@ async function getMeetingState() {
 	// Then check RoomOS call stack
 	const calls = await safe(() => xapi.Status.Call.get(), "Status.Call.get()");
 	if (!Array.isArray(calls) || calls.length === 0) {
+		if (hasRecentTeamsInCall()) {
+			console.log("[JIBB][Teams] No RoomOS call visible, using cached Teams InCall state");
+			return MEETING_STATE.TEAMS;
+		}
 		return MEETING_STATE.NONE;
 	}
 
@@ -180,9 +215,10 @@ function registerTeamsCallHandlers() {
 	try {
 		xapi.Status.MicrosoftTeams.Calling.InCall.on(async (v) => {
 			deviceMode = DEVICE_MODE.MTR; // Teams stack exists => this is MTR
+			rememberTeamsInCall(v);
 
 			const inCall = asBool(v);
-			console.log("[JIBB][Teams] InCall changed:", inCall);
+			console.log("[JIBB][Teams] InCall changed:", { raw: v, parsed: inCall });
 
 			if (inCall) {
 				if (!SessionDetails.isJibbRunning) return;
@@ -806,6 +842,8 @@ async function stopMeeting() {
 	SessionDetails.clientId = "";
 	SessionDetails.externalMeetingId = null;
 	SessionDetails.provider = null;
+	lastTeamsInCall = false;
+	lastTeamsInCallAt = 0;
 
 	logRecordingContext("stopMeeting completed");
 }
@@ -1280,6 +1318,7 @@ async function detectDeviceModeSimple(retries = 10, delayMs = 1000) {
 			await hasPath(() => xapi.Status.MicrosoftTeams.Software.VersionCode.TeamsApp.get(), "TeamsApp");
 
 		if (isMtr) return DEVICE_MODE.MTR;
+
 		await sleep(delayMs);
 	}
 	return DEVICE_MODE.WEBEX;
@@ -1364,6 +1403,9 @@ async function main() {
 
 	registerWebexCallHandlers();
 	registerTeamsCallHandlers();
+	if (deviceMode === DEVICE_MODE.MTR) {
+		await getTeamsInCall();
+	}
 	reactToJibbClick();
 	bindWidgetActions();
 	showAlert();
