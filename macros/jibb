@@ -141,27 +141,7 @@ async function getMeetingState() {
 
 async function handleStandaloneRecordingFlow(title) {
 	logIfRunning("[JIBB][NONE] standalone flow started");
-
-	const ok = await ensureMeetingContextReady({ needUrl: false, timeoutMs: 25000 });
-	if (!ok) return;
-
-	try {
-		const payload = {
-			sensivityLevel: 2,
-			meetingId: SessionDetails.meetingId,
-			meetingToken: SessionDetails.meetingToken,
-			title,
-			// no alternativeEmail, no deviceSerialNumber
-		};
-
-		console.log("[JIBB][NONE][Rec] payload:", payload);
-
-		await Recording.startRecording(payload);
-		SessionDetails.isRecordingInProgress = true;
-		logIfRunning("[JIBB][NONE] Recording started");
-	} catch (err) {
-		console.log("[JIBB][NONE] Recording Error:", err);
-	}
+	console.log("[JIBB][NONE] Recording skipped: no active Teams/Webex meeting and no valid recording email");
 }
 
 
@@ -912,8 +892,12 @@ async function handleTeamsRecordingFlow(title) {
 
 	// 3) Teams -> share meeting
 	try {
-		await shareTeamsMeetingToChat(deviceSerialNumber);
-		logIfRunning("[JIBB][Teams] meeting/share OK (200)");
+		const shared = await shareTeamsMeetingToChat(deviceSerialNumber);
+		if (shared) {
+			logIfRunning("[JIBB][Teams] meeting/share OK");
+		} else {
+			logIfRunning("[JIBB][Teams] meeting/share skipped or unavailable; continuing with recording");
+		}
 	} catch (err) {
 		console.log("[JIBB][Teams] meeting/share failed:", err?.message || err);
 		return;
@@ -929,7 +913,7 @@ async function handleTeamsRecordingFlow(title) {
 			deviceSerialNumber,
 		};
 
-		console.log("[JIBB][Webex][Teams] payload:", payload);
+		console.log("[JIBB][Teams][Rec] payload:", payload);
 
 		await Recording.startRecording(payload);
 
