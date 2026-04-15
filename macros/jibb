@@ -670,7 +670,22 @@ async function generateMeetingLink() {
 	let title = await createTitle()
 	await gettingUserToken()
 	await createMeeting(title)
-	SessionDetails.meetingUrl = `${config.webURL}/cisco/devices/${SessionDetails.meetingId}?user_token=${SessionDetails.userToken}`
+}
+
+function getSourceModeFromInputSourceStatus(status) {
+	return status === "applied" ? "combined" : "single";
+}
+
+function updateMeetingUrl(sourceMode) {
+	SessionDetails.meetingUrl =
+		`${config.webURL}/cisco/devices/${SessionDetails.meetingId}` +
+		`?user_token=${encodeURIComponent(SessionDetails.userToken)}` +
+		`&source_mode=${encodeURIComponent(sourceMode)}`;
+
+	console.log("[JIBB] Meeting URL prepared:", {
+		meetingId: SessionDetails.meetingId,
+		sourceMode,
+	});
 }
 
 async function createTitle() {
@@ -730,6 +745,7 @@ async function autoStartMeeting() {
 	if (inputSourceStatus === "failed") {
 		console.log("[JIBB][VIDEO] Selected input could not be applied; continuing with current source");
 	}
+	updateMeetingUrl(getSourceModeFromInputSourceStatus(inputSourceStatus));
 
 	await openMeetingUrlInWebView()
 
