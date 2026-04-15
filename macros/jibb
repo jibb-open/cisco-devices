@@ -10,6 +10,7 @@ let Recording = JIBB.Recording
 let ShareMeetingStatus = JIBB.ShareMeetingStatus
 
 let recordingStartInFlight = false;
+let sessionTransitionInFlight = false;
 const TEAMS_INCALL_CACHE_TTL_MS = 3000;
 
 const MEETING_STATE = {
@@ -38,6 +39,10 @@ const SurfaceType = {
 	WHITEBOARD: "WHITEBOARD",
 }
 
+const JIBB_COMBINED_LEFT_SOURCE_ID = "2";   // non-built-in source shown on the left
+const JIBB_COMBINED_RIGHT_SOURCE_ID = "1";  // built-in source shown on the right
+const COMBINED_LAYOUT = "Equal";
+
 function getHostname(url) {
 	const match = url.match(/^(?:https?:\/\/)?(?:www\.)?([^\/:]+)/i);
 	return match && match[1];
@@ -58,7 +63,7 @@ let SessionDetails = {
 	meetingUrl: "",
 	cameraId: "",
 	clientId: "",
-	selectedInput: 1,
+	selectedInput: Number(JIBB_COMBINED_LEFT_SOURCE_ID),
 
 	isJibbRunning: false,
 	externalMeetingId: null,
@@ -75,10 +80,97 @@ let CurrentDeviceCameraSettings = {
 	Zoom: 0,
 }
 
+let PreviousMainVideoSource = null;
+
 function asBool(v) {
 	if (v === true || v === 1) return true;
 	const normalized = String(v ?? "").trim().toLowerCase();
 	return normalized === "true" || normalized === "1" || normalized === "on" || normalized === "active" || normalized === "yes";
+}
+
+function normalizeMainVideoSourceIds(value) {
+	if (Array.isArray(value)) {
+		return value.map(v => String(v).trim()).filter(Boolean);
+	}
+
+	if (value === null || typeof value === "undefined") return [];
+
+	const raw = String(value).trim();
+	if (!raw) return [];
+
+	const bracketMatch = raw.match(/^\[\s*([0-9,\s]+)\s*\]$/);
+	if (bracketMatch) {
+		return bracketMatch[1].split(",").map(part => part.trim()).filter(Boolean);
+	}
+
+	if (/^\d+(?:\s*,\s*\d+)*$/.test(raw)) {
+		return raw.split(",").map(part => part.trim()).filter(Boolean);
+	}
+
+	return [];
+}
+
+async function rememberCurrentMainVideoSource() {
+	try {
+		PreviousMainVideoSource = await xapi.Status.Video.Input.MainVideoSource.get();
+		console.log("[JIBB][VIDEO] Previous MainVideoSource:", PreviousMainVideoSource);
+	} catch (e) {
+		console.log("[JIBB][VIDEO] Could not read MainVideoSource:", e?.message || e);
+		PreviousMainVideoSource = null;
+	}
+}
+
+async function applySelectedInputVideoSource({ rememberPrevious = true } = {}) {
+	try {
+		if (rememberPrevious) {
+			await rememberCurrentMainVideoSource();
+		}
+
+		await xapi.Command.Video.Input.SetMainVideoSource({
+			SourceId: [JIBB_COMBINED_LEFT_SOURCE_ID, JIBB_COMBINED_RIGHT_SOURCE_ID],
+			Layout: COMBINED_LAYOUT,
+		});
+
+		const current = await xapi.Status.Video.Input.MainVideoSource.get().catch(() => null);
+		console.log("[JIBB][VIDEO] Combined MainVideoSource applied:", {
+			leftSourceId: JIBB_COMBINED_LEFT_SOURCE_ID,
+			rightSourceId: JIBB_COMBINED_RIGHT_SOURCE_ID,
+			layout: COMBINED_LAYOUT,
+			current,
+		});
+		return true;
+	} catch (e) {
+		console.log("[JIBB][VIDEO] Failed to apply combined MainVideoSource:", e?.message || e);
+		return false;
+	}
+}
+
+async function restoreMainVideoSourceIfNeeded() {
+	const savedSource = PreviousMainVideoSource;
+	PreviousMainVideoSource = null;
+
+	if (savedSource === null || typeof savedSource === "undefined" || savedSource === "") {
+		console.log("[JIBB][VIDEO] No previous MainVideoSource saved");
+		return;
+	}
+
+	if (savedSource === "Composed") {
+		console.log("[JIBB][VIDEO] Previous MainVideoSource was already composed; leaving current composition as is");
+		return;
+	}
+
+	const sourceIds = normalizeMainVideoSourceIds(savedSource);
+	if (sourceIds.length === 0) {
+		console.log("[JIBB][VIDEO] Saved MainVideoSource is not restorable, leaving current source:", savedSource);
+		return;
+	}
+
+	try {
+		await xapi.Command.Video.Input.SetMainVideoSource({ SourceId: sourceIds });
+		console.log("[JIBB][VIDEO] Restored MainVideoSource:", savedSource);
+	} catch (e) {
+		console.log("[JIBB][VIDEO] Failed to restore MainVideoSource:", e?.message || e);
+	}
 }
 
 function rememberTeamsInCall(raw) {
@@ -648,26 +740,38 @@ async function createMeeting(title) {
 
 async function autoStartMeeting() {
 	console.log("autoStartMeeting ...")
-	hideJibbPanel()
-	hideCameraSelfView()
+	SessionDetails.clientId = ""
+	SessionDetails.cameraId = ""
+	SessionDetails.meetingToken = ""
+
+	await Promise.allSettled([
+		hideJibbPanel(),
+		hideCameraSelfView(),
+	])
+
 	await generateMeetingLink()
+
+	const inputSourceApplied = await applySelectedInputVideoSource();
+	if (!inputSourceApplied) {
+		console.log("[JIBB][VIDEO] Selected input could not be applied; continuing with current source");
+	}
+
 	await openMeetingUrlInWebView()
 
 	try {
 		await getWebClinetId()
 		await sleep(3000)
-		await safe(getCameraId, "getCameraId");
-
+		await getCameraId()
 
 	} catch (err) {
 		console.log(err)
-		console.error("Client or camera setup failed:", err.message)
+		console.error("Client or camera setup failed:", err?.message || err)
 		xapi.Command.UserInterface.Message.Alert.Display({
 			Duration: 10,
 			Text: "Please contact admin to check device settings",
 			Title: "Setup Error",
 		});
-		return;
+		throw err;
 	}
 
 	await gettingMeetingToken()
@@ -701,7 +805,7 @@ async function getCameraId() {
 
 		if (!Array.isArray(cameraList) || cameraList.length === 0) {
 			console.warn("Camera list is empty or not an array.");
-			return Promise.reject("No cameras detected or accessible.");
+			throw new Error("No cameras detected or accessible.");
 		}
 
 		const validCameras = cameraList.filter(cam => cam?.id?.trim());
@@ -718,13 +822,14 @@ async function getCameraId() {
 		}
 
 		if (validCameras.length === 0) {
-			return Promise.reject("No valid camera ID available.");
+			throw new Error("No valid camera ID available.");
 		}
 
 		SessionDetails.cameraId = validCameras[0].id;
 	} catch (err) {
-		console.warn("Error in getCameraId:", err.message);
-		return Promise.reject("Camera detection failed: " + err.message);
+		const message = err?.message || err;
+		console.warn("Error in getCameraId:", message);
+		throw new Error("Camera detection failed: " + message);
 	}
 }
 
@@ -768,10 +873,19 @@ async function getWebClinetId() {
 
 
 async function openMeetingUrlInWebView() {
+	try {
+		await closeWebView();
+	} catch (e) {
+		console.log("[JIBB] No existing WebView to clear:", e?.message || e);
+	}
+
 	await xapi.Command.UserInterface.WebView.Display({ Title: "jibb", Url: SessionDetails.meetingUrl });
 
 	//  IMPORTANT: wait until WebView is actually loaded, otherwise client list can stay empty
-	await waitForWebViewReady(SessionDetails.meetingUrl, 30000);
+	const isReady = await waitForWebViewReady(SessionDetails.meetingUrl, 30000);
+	if (!isReady) {
+		throw new Error("WebView did not become ready");
+	}
 }
 
 
@@ -812,6 +926,14 @@ async function stopMeeting() {
 		console.log(err)
 		console.warn("Error restoring camera settings:", err.message);
 	}
+
+	try {
+		await restoreMainVideoSourceIfNeeded();
+	} catch (err) {
+		console.log(err)
+		console.warn("Error restoring main video source:", err.message);
+	}
+
 	SessionDetails.isRecordingInProgress = false;
 	SessionDetails.isJibbRunning = false;
 
@@ -1209,39 +1331,67 @@ function showAlert() {
 		Title: "JIBB is Ready",
 	})
 }
+
+async function setStartToggleValue(value) {
+	await xapi.Command.UserInterface.Extensions.Widget.SetValue({
+		WidgetId: "jibb_start_toggle",
+		Value: value
+	});
+}
+
 function bindWidgetActions() {
 	xapi.Event.UserInterface.Extensions.Widget.Action.on(async (event) => {
 		if (!["changed", "released", "clicked"].includes(event.Type)) return;
 
 		if (event.WidgetId === "jibb_start_toggle") {
-			if (event.Value === "start") {
-				if (SessionDetails.isJibbRunning || SessionDetails.isRecordingInProgress || SessionDetails.meetingId) {
-					await stopMeeting()
-				}
-				SessionDetails.isJibbRunning = true;
-				try {
-					await xapi.Command.UserInterface.Extensions.Widget.SetValue({
-						WidgetId: "jibb_start_toggle",
-						Value: "start"
-					});
-				} catch (e) {
-					console.log("[JIBB] Failed to set toggle=start:", e?.message || e);
-				}
-				await autoStartMeeting()
+			if (event.Type !== "changed") return;
+			if (sessionTransitionInFlight) {
+				console.log(`[JIBB] Ignoring toggle=${event.Value}; session transition already in progress`);
+				return;
 			}
 
-			if (event.Value === "stop") {
-				SessionDetails.isJibbRunning = false;
-				try {
-					await xapi.Command.UserInterface.Extensions.Widget.SetValue({
-						WidgetId: "jibb_start_toggle",
-						Value: "stop"
-					});
-				} catch (e) {
-					console.log("[JIBB] Failed to set toggle=stop:", e?.message || e);
+			sessionTransitionInFlight = true;
+			try {
+				if (event.Value === "start") {
+					if (SessionDetails.isJibbRunning || SessionDetails.isRecordingInProgress || SessionDetails.meetingId) {
+						await stopMeeting()
+					}
+					SessionDetails.isJibbRunning = true;
+					try {
+						await setStartToggleValue("start");
+					} catch (e) {
+						console.log("[JIBB] Failed to set toggle=start:", e?.message || e);
+					}
+					await autoStartMeeting()
 				}
-				RecordingEmail = "";
-				await stopMeeting();
+
+				if (event.Value === "stop") {
+					SessionDetails.isJibbRunning = false;
+					try {
+						await setStartToggleValue("stop");
+					} catch (e) {
+						console.log("[JIBB] Failed to set toggle=stop:", e?.message || e);
+					}
+					RecordingEmail = "";
+					await stopMeeting();
+				}
+			} catch (err) {
+				console.log(`[JIBB] Toggle ${event.Value} failed:`, err?.message || err);
+				if (event.Value === "start") {
+					SessionDetails.isJibbRunning = false;
+					try {
+						await stopMeeting();
+					} catch (cleanupErr) {
+						console.log("[JIBB] Failed to clean up after start error:", cleanupErr?.message || cleanupErr);
+					}
+					try {
+						await setStartToggleValue("stop");
+					} catch (toggleErr) {
+						console.log("[JIBB] Failed to reset toggle=stop:", toggleErr?.message || toggleErr);
+					}
+				}
+			} finally {
+				sessionTransitionInFlight = false;
 			}
 			return;
 		}
@@ -1429,7 +1579,7 @@ function reactToJibbClick() {
 
 
 
-				await setCameraPreset(`Jibb${SessionDetails.selectedInput}`).catch(e =>
+				await setCameraPreset(`Jibb${JIBB_COMBINED_LEFT_SOURCE_ID}`).catch(e =>
 					console.log("[JIBB] setCameraPreset failed:", e?.message || e)
 				);
 
