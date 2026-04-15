@@ -744,10 +744,17 @@ async function autoStartMeeting() {
 	SessionDetails.cameraId = ""
 	SessionDetails.meetingToken = ""
 
-	await Promise.allSettled([
-		hideJibbPanel(),
-		hideCameraSelfView(),
-	])
+	try {
+		await hideJibbPanel()
+	} catch (e) {
+		console.log("[JIBB] hideJibbPanel failed before start:", e?.message || e);
+	}
+
+	try {
+		await hideCameraSelfView()
+	} catch (e) {
+		console.log("[JIBB] hideCameraSelfView failed before start:", e?.message || e);
+	}
 
 	await generateMeetingLink()
 
@@ -1341,10 +1348,16 @@ async function setStartToggleValue(value) {
 
 function bindWidgetActions() {
 	xapi.Event.UserInterface.Extensions.Widget.Action.on(async (event) => {
-		if (!["changed", "released", "clicked"].includes(event.Type)) return;
+		if (!["changed", "released"].includes(event.Type)) return;
 
 		if (event.WidgetId === "jibb_start_toggle") {
-			if (event.Type !== "changed") return;
+			console.log("[JIBB] Start toggle event:", {
+				type: event.Type,
+				value: event.Value,
+				inFlight: sessionTransitionInFlight,
+			});
+
+			if (!["start", "stop"].includes(event.Value)) return;
 			if (sessionTransitionInFlight) {
 				console.log(`[JIBB] Ignoring toggle=${event.Value}; session transition already in progress`);
 				return;
@@ -1357,21 +1370,11 @@ function bindWidgetActions() {
 						await stopMeeting()
 					}
 					SessionDetails.isJibbRunning = true;
-					try {
-						await setStartToggleValue("start");
-					} catch (e) {
-						console.log("[JIBB] Failed to set toggle=start:", e?.message || e);
-					}
 					await autoStartMeeting()
 				}
 
 				if (event.Value === "stop") {
 					SessionDetails.isJibbRunning = false;
-					try {
-						await setStartToggleValue("stop");
-					} catch (e) {
-						console.log("[JIBB] Failed to set toggle=stop:", e?.message || e);
-					}
 					RecordingEmail = "";
 					await stopMeeting();
 				}
@@ -1461,6 +1464,7 @@ async function detectDeviceModeSimple(retries = 10, delayMs = 1000) {
 async function waitForWebViewReady(expectedUrl, timeoutMs = 30000) {
 	const start = Date.now();
 	const base = String(expectedUrl || "").split("?")[0];
+	let lastSeen = null;
 
 	while (Date.now() - start < timeoutMs) {
 		const views = await safe(() => xapi.Status.UserInterface.WebView.get(), "Status.UserInterface.WebView.get()");
@@ -1473,16 +1477,38 @@ async function waitForWebViewReady(expectedUrl, timeoutMs = 30000) {
 			list[0];
 
 		if (v) {
-			const statusOk = v.Status === "Visible";
-			const httpOk = String(v.HttpResponseStatusCode) === "200";
+			const status = String(v?.Status || "");
+			const httpCode = String(v?.HttpResponseStatusCode || "");
+			const url = String(v?.URL || v?.Url || "");
+			const statusOk =
+				!status ||
+				["Visible", "Ready", "Loaded"].includes(status) ||
+				(status !== "Hidden" && status !== "NotVisible");
+			const httpOk = !httpCode || httpCode === "0" || httpCode === "200";
 
-			if (statusOk && httpOk) return true;
+			lastSeen = { status, httpCode, url };
+
+			if (statusOk && httpOk) {
+				console.log("[JIBB] WebView ready from WebView status:", lastSeen);
+				return true;
+			}
+		}
+
+		const statusList = await safe(() => EventBus.getClientStatusList(), "EventBus.getClientStatusList() during waitForWebViewReady");
+		const items = Array.isArray(statusList) ? statusList : (statusList ? [statusList] : []);
+		const webapp = items.find(c =>
+			(c?.clientType === "WEBAPP" || c?.type === "WEBAPP") && c?.id
+		);
+
+		if (webapp?.id) {
+			console.log("[JIBB] WebView ready from WEBAPP client:", webapp);
+			return true;
 		}
 
 		await sleep(500);
 	}
 
-	console.log("[JIBB] WebView not ready (Visible + 200) before timeout");
+	console.log("[JIBB] WebView not ready before timeout. Last seen state:", lastSeen);
 	return false;
 }
 
