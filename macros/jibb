@@ -80,51 +80,36 @@ let CurrentDeviceCameraSettings = {
 	Zoom: 0,
 }
 
-let PreviousMainVideoSource = null;
-
 function asBool(v) {
 	if (v === true || v === 1) return true;
 	const normalized = String(v ?? "").trim().toLowerCase();
 	return normalized === "true" || normalized === "1" || normalized === "on" || normalized === "active" || normalized === "yes";
 }
 
-function normalizeMainVideoSourceIds(value) {
-	if (Array.isArray(value)) {
-		return value.map(v => String(v).trim()).filter(Boolean);
-	}
-
-	if (value === null || typeof value === "undefined") return [];
-
-	const raw = String(value).trim();
-	if (!raw) return [];
-
-	const bracketMatch = raw.match(/^\[\s*([0-9,\s]+)\s*\]$/);
-	if (bracketMatch) {
-		return bracketMatch[1].split(",").map(part => part.trim()).filter(Boolean);
-	}
-
-	if (/^\d+(?:\s*,\s*\d+)*$/.test(raw)) {
-		return raw.split(",").map(part => part.trim()).filter(Boolean);
-	}
-
-	return [];
-}
-
-async function rememberCurrentMainVideoSource() {
+async function isVideoInputConnectorConnected(id) {
 	try {
-		PreviousMainVideoSource = await xapi.Status.Video.Input.MainVideoSource.get();
-		console.log("[JIBB][VIDEO] Previous MainVideoSource:", PreviousMainVideoSource);
+		const raw = await xapi.Status.Video.Input.Connector[id].Connected.get();
+		return asBool(raw);
 	} catch (e) {
-		console.log("[JIBB][VIDEO] Could not read MainVideoSource:", e?.message || e);
-		PreviousMainVideoSource = null;
+		if (!isNoMatch(e)) {
+			console.log(`[JIBB][VIDEO] Could not read connector ${id} state:`, e?.message || e);
+		}
+		return false;
 	}
 }
 
-async function applySelectedInputVideoSource({ rememberPrevious = true } = {}) {
+async function applySelectedInputVideoSource() {
+	const leftSourceConnected = await isVideoInputConnectorConnected(JIBB_COMBINED_LEFT_SOURCE_ID);
+	if (!leftSourceConnected) {
+		console.log(
+			`[JIBB][VIDEO] Combined mode skipped: source ${JIBB_COMBINED_LEFT_SOURCE_ID} is not connected or not available`
+		);
+		return "skipped";
+	}
+
 	try {
-		if (rememberPrevious) {
-			await rememberCurrentMainVideoSource();
-		}
+		const currentBefore = await xapi.Status.Video.Input.MainVideoSource.get().catch(() => null);
+		console.log("[JIBB][VIDEO] MainVideoSource before start:", currentBefore);
 
 		await xapi.Command.Video.Input.SetMainVideoSource({
 			SourceId: [JIBB_COMBINED_LEFT_SOURCE_ID, JIBB_COMBINED_RIGHT_SOURCE_ID],
@@ -132,44 +117,27 @@ async function applySelectedInputVideoSource({ rememberPrevious = true } = {}) {
 		});
 
 		const current = await xapi.Status.Video.Input.MainVideoSource.get().catch(() => null);
-		console.log("[JIBB][VIDEO] Combined MainVideoSource applied:", {
-			leftSourceId: JIBB_COMBINED_LEFT_SOURCE_ID,
-			rightSourceId: JIBB_COMBINED_RIGHT_SOURCE_ID,
-			layout: COMBINED_LAYOUT,
-			current,
-		});
-		return true;
+			console.log("[JIBB][VIDEO] Combined MainVideoSource applied:", {
+				leftSourceId: JIBB_COMBINED_LEFT_SOURCE_ID,
+				rightSourceId: JIBB_COMBINED_RIGHT_SOURCE_ID,
+				layout: COMBINED_LAYOUT,
+				current,
+			});
+			return "applied";
 	} catch (e) {
 		console.log("[JIBB][VIDEO] Failed to apply combined MainVideoSource:", e?.message || e);
-		return false;
+		return "failed";
 	}
 }
 
 async function restoreMainVideoSourceIfNeeded() {
-	const savedSource = PreviousMainVideoSource;
-	PreviousMainVideoSource = null;
-
-	if (savedSource === null || typeof savedSource === "undefined" || savedSource === "") {
-		console.log("[JIBB][VIDEO] No previous MainVideoSource saved");
-		return;
-	}
-
-	if (savedSource === "Composed") {
-		console.log("[JIBB][VIDEO] Previous MainVideoSource was already composed; leaving current composition as is");
-		return;
-	}
-
-	const sourceIds = normalizeMainVideoSourceIds(savedSource);
-	if (sourceIds.length === 0) {
-		console.log("[JIBB][VIDEO] Saved MainVideoSource is not restorable, leaving current source:", savedSource);
-		return;
-	}
-
 	try {
-		await xapi.Command.Video.Input.SetMainVideoSource({ SourceId: sourceIds });
-		console.log("[JIBB][VIDEO] Restored MainVideoSource:", savedSource);
+		await xapi.Command.Video.Input.SetMainVideoSource({
+			ConnectorId: Number(JIBB_COMBINED_RIGHT_SOURCE_ID),
+		});
+		console.log("[JIBB][VIDEO] Forced built-in MainVideoSource after stop:", JIBB_COMBINED_RIGHT_SOURCE_ID);
 	} catch (e) {
-		console.log("[JIBB][VIDEO] Failed to restore MainVideoSource:", e?.message || e);
+		console.log("[JIBB][VIDEO] Failed to force built-in MainVideoSource after stop:", e?.message || e);
 	}
 }
 
@@ -758,8 +726,8 @@ async function autoStartMeeting() {
 
 	await generateMeetingLink()
 
-	const inputSourceApplied = await applySelectedInputVideoSource();
-	if (!inputSourceApplied) {
+	const inputSourceStatus = await applySelectedInputVideoSource();
+	if (inputSourceStatus === "failed") {
 		console.log("[JIBB][VIDEO] Selected input could not be applied; continuing with current source");
 	}
 
@@ -1155,7 +1123,7 @@ async function setCameraPreset(positionName) {
 		console.warn("This device does not have SpeakerTrack");
 	}
 
-	const presetNamesToTry = [positionName, "Jibb", "jibb"];
+	const presetNamesToTry = ["Jibb", "jibb"];
 
 	try {
 		const allCameras = await xapi.Status.Cameras.Camera.get();
@@ -1605,9 +1573,9 @@ function reactToJibbClick() {
 
 
 
-				await setCameraPreset(`Jibb${JIBB_COMBINED_LEFT_SOURCE_ID}`).catch(e =>
-					console.log("[JIBB] setCameraPreset failed:", e?.message || e)
-				);
+					await setCameraPreset("Jibb").catch(e =>
+						console.log("[JIBB] setCameraPreset failed:", e?.message || e)
+					);
 
 				await showCameraSelfView()
 			}
