@@ -1586,7 +1586,7 @@ let uiExtension = `<Extensions>
         <Name>Row</Name>
         <Widget>
           <WidgetId>widget_5</WidgetId>
-          <Name>Tap Start when you're ready to Launch JIBB Session</Name>
+          <Name>Optional: set an email, then tap Start to launch JIBB</Name>
           <Type>Text</Type>
           <Options>size=4;fontSize=small;align=left</Options>
         </Widget>

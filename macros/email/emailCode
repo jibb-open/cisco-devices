@@ -3,9 +3,9 @@ function reactToEmailEdit() {
     if (event.Type === "released" && event.WidgetId === "jibb_email") {
       xapi.Command.UserInterface.Message.TextInput.Display({
         FeedbackId: "user_email",
-        Title: "Set your Auto-Save Email",
-        Text: "JIBB will send your PDF automatically. If empty, the meeting host will receive it.",
-        Placeholder: RecordingEmail || "Enter email address",
+        Title: "Set email",
+        Text: "Optional. Enter an email for PDF in standalone and Webex sessions. If left blank, JIBB may use a meeting email when available.",
+        Placeholder: RecordingEmail || "Enter email",
       });
 
     }
