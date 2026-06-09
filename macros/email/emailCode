@@ -16,10 +16,6 @@ function setEmailistener() {
   xapi.Event.UserInterface.Message.TextInput.Response.on(async (event) => {
     if (event.FeedbackId === "user_email") {
       RecordingEmail = event.Text.trim();
-      await xapi.Command.UserInterface.Extensions.Widget.SetValue({
-        WidgetId: "widget_2",
-        Value: `Current Recording Email: ${RecordingEmail}`,
-      }).catch(() => { });
     }
   });
 }

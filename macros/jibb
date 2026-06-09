@@ -142,7 +142,34 @@ async function getMeetingState() {
 
 async function handleStandaloneRecordingFlow(title) {
 	logIfRunning("[JIBB][NONE] standalone flow started");
-	console.log("[JIBB][NONE] Recording skipped: no active Teams/Webex meeting and no valid recording email");
+
+	const recordingTargetEmail = String(RecordingEmail || "").trim();
+	if (!recordingTargetEmail) {
+		console.log("[JIBB][NONE] Recording skipped: no active Teams/Webex meeting and no recording email provided");
+		return;
+	}
+
+	const ok = await ensureMeetingContextReady({ needUrl: false, timeoutMs: 25000 });
+	if (!ok) return;
+
+	try {
+		const payload = {
+			sensivityLevel: 2,
+			meetingId: SessionDetails.meetingId,
+			meetingToken: SessionDetails.meetingToken,
+			title,
+			alternativeEmail: recordingTargetEmail,
+		};
+
+		console.log("[JIBB][NONE][Rec] payload:", payload);
+
+		await Recording.startRecording(payload);
+
+		SessionDetails.isRecordingInProgress = true;
+		logIfRunning("[JIBB][NONE] Recording started");
+	} catch (err) {
+		console.log("[JIBB][NONE] Recording Error:", err);
+	}
 }
 
 
@@ -853,13 +880,6 @@ async function stopMeeting() {
 	SessionDetails.provider = null;
 	lastTeamsInCall = false;
 	lastTeamsInCallAt = 0;
-
-	try {
-		await xapi.Command.UserInterface.Extensions.Widget.SetValue({
-			WidgetId: "widget_2",
-			Value: "Current Recording Email: ",
-		});
-	} catch { }
 
 	logRecordingContext("stopMeeting completed");
 }
