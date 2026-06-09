@@ -1,7 +1,6 @@
 function reactToEmailEdit() {
   xapi.Event.UserInterface.Extensions.Widget.Action.on((event) => {
     if (event.Type === "released" && event.WidgetId === "jibb_email") {
-
       xapi.Command.UserInterface.Message.TextInput.Display({
         FeedbackId: "user_email",
         Title: "Set your Auto-Save Email",
@@ -17,6 +16,10 @@ function setEmailistener() {
   xapi.Event.UserInterface.Message.TextInput.Response.on(async (event) => {
     if (event.FeedbackId === "user_email") {
       RecordingEmail = event.Text.trim();
+      await xapi.Command.UserInterface.Extensions.Widget.SetValue({
+        WidgetId: "widget_2",
+        Value: `Current Recording Email: ${RecordingEmail}`,
+      }).catch(() => { });
     }
   });
 }
