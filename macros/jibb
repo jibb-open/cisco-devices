@@ -39,10 +39,6 @@ const SurfaceType = {
 	WHITEBOARD: "WHITEBOARD",
 }
 
-const JIBB_COMBINED_LEFT_SOURCE_ID = "2";   // non-built-in source shown on the left
-const JIBB_COMBINED_RIGHT_SOURCE_ID = "1";  // built-in source shown on the right
-const COMBINED_LAYOUT = "Equal";
-
 function getHostname(url) {
 	const match = url.match(/^(?:https?:\/\/)?(?:www\.)?([^\/:]+)/i);
 	return match && match[1];
@@ -63,7 +59,7 @@ let SessionDetails = {
 	meetingUrl: "",
 	cameraId: "",
 	clientId: "",
-	selectedInput: Number(JIBB_COMBINED_LEFT_SOURCE_ID),
+	selectedInput: 1,
 
 	isJibbRunning: false,
 	externalMeetingId: null,
@@ -84,61 +80,6 @@ function asBool(v) {
 	if (v === true || v === 1) return true;
 	const normalized = String(v ?? "").trim().toLowerCase();
 	return normalized === "true" || normalized === "1" || normalized === "on" || normalized === "active" || normalized === "yes";
-}
-
-async function isVideoInputConnectorConnected(id) {
-	try {
-		const raw = await xapi.Status.Video.Input.Connector[id].Connected.get();
-		return asBool(raw);
-	} catch (e) {
-		if (!isNoMatch(e)) {
-			console.log(`[JIBB][VIDEO] Could not read connector ${id} state:`, e?.message || e);
-		}
-		return false;
-	}
-}
-
-async function applySelectedInputVideoSource() {
-	const leftSourceConnected = await isVideoInputConnectorConnected(JIBB_COMBINED_LEFT_SOURCE_ID);
-	if (!leftSourceConnected) {
-		console.log(
-			`[JIBB][VIDEO] Combined mode skipped: source ${JIBB_COMBINED_LEFT_SOURCE_ID} is not connected or not available`
-		);
-		return "skipped";
-	}
-
-	try {
-		const currentBefore = await xapi.Status.Video.Input.MainVideoSource.get().catch(() => null);
-		console.log("[JIBB][VIDEO] MainVideoSource before start:", currentBefore);
-
-		await xapi.Command.Video.Input.SetMainVideoSource({
-			SourceId: [JIBB_COMBINED_LEFT_SOURCE_ID, JIBB_COMBINED_RIGHT_SOURCE_ID],
-			Layout: COMBINED_LAYOUT,
-		});
-
-		const current = await xapi.Status.Video.Input.MainVideoSource.get().catch(() => null);
-			console.log("[JIBB][VIDEO] Combined MainVideoSource applied:", {
-				leftSourceId: JIBB_COMBINED_LEFT_SOURCE_ID,
-				rightSourceId: JIBB_COMBINED_RIGHT_SOURCE_ID,
-				layout: COMBINED_LAYOUT,
-				current,
-			});
-			return "applied";
-	} catch (e) {
-		console.log("[JIBB][VIDEO] Failed to apply combined MainVideoSource:", e?.message || e);
-		return "failed";
-	}
-}
-
-async function restoreMainVideoSourceIfNeeded() {
-	try {
-		await xapi.Command.Video.Input.SetMainVideoSource({
-			ConnectorId: Number(JIBB_COMBINED_RIGHT_SOURCE_ID),
-		});
-		console.log("[JIBB][VIDEO] Forced built-in MainVideoSource after stop:", JIBB_COMBINED_RIGHT_SOURCE_ID);
-	} catch (e) {
-		console.log("[JIBB][VIDEO] Failed to force built-in MainVideoSource after stop:", e?.message || e);
-	}
 }
 
 function rememberTeamsInCall(raw) {
@@ -201,7 +142,34 @@ async function getMeetingState() {
 
 async function handleStandaloneRecordingFlow(title) {
 	logIfRunning("[JIBB][NONE] standalone flow started");
-	console.log("[JIBB][NONE] Recording skipped: no active Teams/Webex meeting and no valid recording email");
+
+	const recordingTargetEmail = String(RecordingEmail || "").trim();
+	if (!recordingTargetEmail) {
+		console.log("[JIBB][NONE] Recording skipped: no active Teams/Webex meeting and no recording email provided");
+		return;
+	}
+
+	const ok = await ensureMeetingContextReady({ needUrl: false, timeoutMs: 25000 });
+	if (!ok) return;
+
+	try {
+		const payload = {
+			sensivityLevel: 2,
+			meetingId: SessionDetails.meetingId,
+			meetingToken: SessionDetails.meetingToken,
+			title,
+			alternativeEmail: recordingTargetEmail,
+		};
+
+		console.log("[JIBB][NONE][Rec] payload:", payload);
+
+		await Recording.startRecording(payload);
+
+		SessionDetails.isRecordingInProgress = true;
+		logIfRunning("[JIBB][NONE] Recording started");
+	} catch (err) {
+		console.log("[JIBB][NONE] Recording Error:", err);
+	}
 }
 
 
@@ -670,22 +638,9 @@ async function generateMeetingLink() {
 	let title = await createTitle()
 	await gettingUserToken()
 	await createMeeting(title)
-}
-
-function getSourceModeFromInputSourceStatus(status) {
-	return status === "applied" ? "combined" : "single";
-}
-
-function updateMeetingUrl(sourceMode) {
 	SessionDetails.meetingUrl =
 		`${config.webURL}/cisco/devices/${SessionDetails.meetingId}` +
-		`?user_token=${encodeURIComponent(SessionDetails.userToken)}` +
-		`&source_mode=${encodeURIComponent(sourceMode)}`;
-
-	console.log("[JIBB] Meeting URL prepared:", {
-		meetingId: SessionDetails.meetingId,
-		sourceMode,
-	});
+		`?user_token=${encodeURIComponent(SessionDetails.userToken)}`;
 }
 
 async function createTitle() {
@@ -740,12 +695,6 @@ async function autoStartMeeting() {
 	}
 
 	await generateMeetingLink()
-
-	const inputSourceStatus = await applySelectedInputVideoSource();
-	if (inputSourceStatus === "failed") {
-		console.log("[JIBB][VIDEO] Selected input could not be applied; continuing with current source");
-	}
-	updateMeetingUrl(getSourceModeFromInputSourceStatus(inputSourceStatus));
 
 	await openMeetingUrlInWebView()
 
@@ -918,15 +867,9 @@ async function stopMeeting() {
 		console.warn("Error restoring camera settings:", err.message);
 	}
 
-	try {
-		await restoreMainVideoSourceIfNeeded();
-	} catch (err) {
-		console.log(err)
-		console.warn("Error restoring main video source:", err.message);
-	}
-
 	SessionDetails.isRecordingInProgress = false;
 	SessionDetails.isJibbRunning = false;
+	RecordingEmail = "";
 
 	SessionDetails.meetingId = "";
 	SessionDetails.meetingToken = "";
@@ -1638,11 +1581,12 @@ let uiExtension = `<Extensions>
           <Options>size=4;fontSize=normal;align=center</Options>
         </Widget>       
       </Row>
-    <Row>
+	  #EmailXml#
+      <Row>
         <Name>Row</Name>
         <Widget>
           <WidgetId>widget_5</WidgetId>
-          <Name>Tap Start when you're ready to Launch JIBB Session</Name>
+          <Name>Optional: set an email, then tap Start to launch JIBB</Name>
           <Type>Text</Type>
           <Options>size=4;fontSize=small;align=left</Options>
         </Widget>
