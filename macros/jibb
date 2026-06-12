@@ -934,6 +934,7 @@ async function handleWebexRecordingFlow(title) {
 
 async function handleTeamsRecordingFlow(title) {
 	logIfRunning("[JIBB][Teams] flow started");
+	const recordingTargetEmail = String(RecordingEmail || "").trim();
 
 	// 1) Teams -> get device id
 	const deviceSerialNumber = await getDeviceSerialNumber();
@@ -968,6 +969,10 @@ async function handleTeamsRecordingFlow(title) {
 			title,
 			deviceSerialNumber,
 		};
+		if (recordingTargetEmail) {
+			payload.alternativeEmail = recordingTargetEmail;
+			logIfRunning("[JIBB][Teams] Using RecordingEmail:", recordingTargetEmail);
+		}
 
 		console.log("[JIBB][Teams][Rec] payload:", payload);
 
