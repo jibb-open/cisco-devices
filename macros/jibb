@@ -733,6 +733,7 @@ async function startTheMeeting() {
 		cameraId: SessionDetails.cameraId,
 		clientId: SessionDetails.clientId,
 		enableColor: true,
+		enableCeTorch: true,
 	}
 	await EventBus.startStream(req)
 }
